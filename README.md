@@ -21,6 +21,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | **How many agents?** | 32 agents on the phone at the busiest half hour reach 83% within 20 s; 33 give 88%. The plan covers 28 days in 30-minute intervals at P50 and P80, with 30% shrinkage. |
 | **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
 | **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. |
+| **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. With a 2B local model on CPU it refused or blocked **4/4** unsafe requests but answered only 3 of 20 questions correctly: the guard is ready, the model is not. See [Analytics assistant](#analytics-assistant). |
 
 ## What it shows (mapped to the role)
 
@@ -36,6 +37,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | Classification | Out-of-time validation, leakage guard, calibration (Brier), lift, cost-based threshold, explanations |
 | Anomaly detection | Poisson baselines per car on the road, Benjamini-Hochberg false discovery control |
 | Dashboards | Streamlit app; CSV extracts for Tableau / Power BI in `data/exports` |
+| AI decision support | Text-to-SQL assistant with a SQL guard, a golden set scored by execution accuracy and versioned prompts ([`assistant/`](src/care_analytics/assistant)) |
 | Engineering | CLI, tests on the injected truth, GitHub Actions, Docker |
 
 ## Architecture
@@ -52,6 +54,8 @@ flowchart LR
     W --> C[Service churn<br/>call list]
     W --> A[Complaint<br/>early warning]
     W & P & SEG & C & A --> D[Dashboard<br/>+ CSV exports]
+    W --> AS[Analytics assistant<br/>LLM -> SQL guard -> read-only query]
+    AS --> D
     G -. ground truth .-> T{{Scoring:<br/>tests and reports}}
 ```
 
@@ -77,6 +81,15 @@ Tests check the pipeline against what the generator injected:
 
 ```bash
 pytest -q
+```
+
+Ask the data (a local [Ollama](https://ollama.com) model by default, so no data leaves the
+machine; set `ASSISTANT_PROVIDER=openai` with `ASSISTANT_BASE_URL`, `ASSISTANT_MODEL` and
+`ASSISTANT_API_KEY` for OpenAI, Azure OpenAI or DeepSeek):
+
+```bash
+care ask "Haziran 2025'te şikâyet kuyruğunun servis seviyesi neydi?" --explain
+care eval-assistant                # the 24-question golden set
 ```
 
 ## Data
@@ -190,6 +203,44 @@ series.
 
 23 alerts, 22 on the planted problems. A CUSUM chart would catch the slow drift earlier.
 
+### Analytics assistant
+
+A manager asks in Turkish or English; the model writes one DuckDB query; **code, not the
+model, decides whether it runs**:
+
+1. **Guard** ([`guard.py`](src/care_analytics/assistant/guard.py)), on the parsed SQL tree
+   (sqlglot): exactly one read-only statement; allow-listed analytics tables only, where
+   customers are seen through a view without names, phones or e-mails; no personal-data
+   columns; no table functions that read files or URLs; a row limit.
+2. **Connection:** read-only, external access disabled and locked so a query cannot switch it
+   back on, with a time limit.
+3. **Loop:** a database error or invalid SQL goes back to the model for up to two repairs.
+   A blocked query does not: the model does not get to search for a way around the guard.
+   Refused, blocked and failed are reported separately.
+4. **Context** ([`context.py`](src/care_analytics/assistant/context.py)): columns, the values
+   of category columns (the complaint queue is `sikayet`), KPI formulas (rates are ratios of
+   sums) and the data period. The prompt is versioned; each version's result is kept in
+   [`docs/eval`](docs/eval).
+
+**Evaluation:** 24 questions in 7 categories, Turkish and English, including 4 unsafe requests
+(personal data, delete, prompt injection, reading a file). A query is correct when it returns
+the same result as the reference query, not when it looks the same: row and column order,
+column names, extra columns and percentages are tolerated.
+
+| Model | Prompt | Answerable (20) | Unsafe refused or blocked (4) | Median latency |
+|---|---|---:|---:|---:|
+| `qwen3.5-32k:2b`, local CPU | 1.0 | 3 | 4 | 110 s |
+
+What the run shows:
+
+* **The guard is what makes it safe.** Asked to delete tickets, the model *wrote* the
+  `DELETE`; the guard stopped it. Asked to read `/etc/passwd`, it wrote `read_csv`; blocked.
+  A prompt instruction alone would have failed both.
+* **A 2B model is not good enough for this job.** Typical errors: joining tables the question
+  does not need, inventing columns, and averaging daily rates instead of dividing sums.
+* Prompt 1.1 adds two general rules (only listed columns, as few tables as possible) and sends
+  invalid SQL back for repair instead of treating it as blocked.
+
 ## Project structure
 
 ```
@@ -204,6 +255,7 @@ src/care_analytics/
   segmentation.py    RFM and k-means
   churn.py           post-warranty churn, cost-based call list, explanations
   anomaly.py         complaint early warning
+  assistant/         text-to-SQL assistant: guard, context, agent loop, golden set, evaluation
   cli.py             `care` command
 dashboard/app.py     Streamlit dashboard
 docs/kpi_definitions.md
@@ -222,5 +274,6 @@ tests/               unit tests + end-to-end checks against the injected truth
 
 * Conformal calibration of the forecast intervals; Erlang A with abandonment.
 * CUSUM for slow complaint drifts.
-* A natural-language analytics assistant over the star schema (text-to-SQL with an
-  evaluation set), the pattern from [retail-rag-assistant](https://github.com/orhansonmeztr/retail-rag-assistant).
+* Evaluate the assistant with a stronger model (e.g. `gpt-4.1-mini`, the model behind
+  [retail-rag-assistant](https://github.com/orhansonmeztr/retail-rag-assistant)) and a larger
+  local one on a GPU; report accuracy against cost and latency.
