@@ -4,10 +4,14 @@ Two providers:
 
 * ``ollama`` (default): a local model through Ollama's native API, with "thinking" turned off.
   No customer data leaves the machine.
-* ``openai``: any OpenAI-compatible endpoint (OpenAI, Azure OpenAI v1 endpoint, DeepSeek ...).
+* ``deepseek``: DeepSeek's OpenAI-compatible API, configured by ``DEEPSEEK_*`` variables.
+* ``openai``: any OpenAI-compatible endpoint (OpenAI, Azure OpenAI v1 endpoint ...).
 
 Environment: ``ASSISTANT_PROVIDER``, ``ASSISTANT_MODEL``, ``ASSISTANT_BASE_URL``,
-``ASSISTANT_API_KEY`` (openai only).
+``ASSISTANT_API_KEY``; for DeepSeek ``DEEPSEEK_BASE_URL``, ``DEEPSEEK_API_KEY``,
+``DEEPSEEK_MODEL``, ``DEEPSEEK_TEMPERATURE``, ``DEEPSEEK_TIMEOUT_SECONDS``,
+``DEEPSEEK_MAX_RETRIES``. A ``.env`` file in the working directory is read if present;
+variables already set in the environment win.
 """
 
 from __future__ import annotations
@@ -21,12 +25,25 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 
+def load_dotenv(path: str = ".env") -> None:
+    """Minimal .env reader (KEY=VALUE lines); never overrides the real environment."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
 @dataclass
 class Reply:
     text: str
     prompt_tokens: int = 0
     completion_tokens: int = 0
     seconds: float = 0.0
+    cached_prompt_tokens: int = 0
 
 
 class ChatModel(Protocol):
@@ -47,6 +64,7 @@ class OpenAICompatible:
     api_key: str = field(default_factory=lambda: os.environ.get("ASSISTANT_API_KEY", ""))
     temperature: float = 0.0
     timeout: float = 120.0
+    max_retries: int = 2
 
     @property
     def name(self) -> str:
@@ -55,7 +73,8 @@ class OpenAICompatible:
     def chat(self, messages: list[dict]) -> Reply:
         from openai import OpenAI
 
-        client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=self.timeout)
+        client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=self.timeout,
+                        max_retries=self.max_retries)  # fmt: skip
         t0 = time.perf_counter()
         r = client.chat.completions.create(
             model=self.model, messages=messages, temperature=self.temperature
@@ -67,7 +86,21 @@ class OpenAICompatible:
             prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(u, "completion_tokens", 0) or 0,
             seconds=time.perf_counter() - t0,
+            # DeepSeek reports prompt-cache hits; they are billed at a fraction of the price
+            cached_prompt_tokens=getattr(u, "prompt_cache_hit_tokens", 0) or 0,
         )
+
+
+def deepseek_model() -> OpenAICompatible:
+    env = os.environ
+    return OpenAICompatible(
+        base_url=env.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        model=env.get("DEEPSEEK_MODEL", "deepseek-flash"),
+        api_key=env.get("DEEPSEEK_API_KEY", ""),
+        temperature=float(env.get("DEEPSEEK_TEMPERATURE", "0")),
+        timeout=float(env.get("DEEPSEEK_TIMEOUT_SECONDS", "60")),
+        max_retries=int(env.get("DEEPSEEK_MAX_RETRIES", "2")),
+    )
 
 
 @dataclass
@@ -104,9 +137,14 @@ class OllamaChat:
         )
 
 
-def default_model() -> ChatModel:
-    provider = os.environ.get("ASSISTANT_PROVIDER", "ollama").lower()
-    return OpenAICompatible() if provider == "openai" else OllamaChat()
+def default_model(provider: str | None = None) -> ChatModel:
+    load_dotenv()
+    provider = (provider or os.environ.get("ASSISTANT_PROVIDER", "ollama")).lower()
+    if provider == "deepseek":
+        return deepseek_model()
+    if provider == "openai":
+        return OpenAICompatible()
+    return OllamaChat()
 
 
 @dataclass

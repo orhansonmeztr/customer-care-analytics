@@ -55,11 +55,17 @@ def _assistant(argv: list[str]) -> None:
     for p in (ask, ev):
         p.add_argument("--data-dir", default=None)
         p.add_argument("--model", default=None, help="model name (default: $ASSISTANT_MODEL)")
+        p.add_argument(
+            "--provider",
+            default=None,
+            choices=["ollama", "deepseek", "openai"],
+            help="default: $ASSISTANT_PROVIDER or ollama (local)",
+        )
     args = ap.parse_args(argv)
 
     from .assistant.llm import default_model
 
-    model = default_model()
+    model = default_model(args.provider)
     if args.model:
         model.model = args.model
     paths = get_paths(args.data_dir)

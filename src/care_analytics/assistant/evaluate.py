@@ -93,7 +93,8 @@ def evaluate(paths: Paths, model: ChatModel, ids: list[str] | None = None) -> di
             "id": item["id"], "category": item["category"], "question": item["question"],
             "status": res.status, "passed": passed, "attempts": res.attempts,
             "seconds": round(res.seconds, 2), "prompt_tokens": res.prompt_tokens,
-            "completion_tokens": res.completion_tokens, "sql": res.sql, "error": res.error,
+            "completion_tokens": res.completion_tokens,
+            "cached_prompt_tokens": res.cached_prompt_tokens, "sql": res.sql, "error": res.error,
         })  # fmt: skip
     con.close()
     df = pd.DataFrame(rows)
@@ -111,6 +112,9 @@ def evaluate(paths: Paths, model: ChatModel, ids: list[str] | None = None) -> di
         "repaired_after_error": int(((df["attempts"] > 1) & df["passed"]).sum()),
         "p50_seconds": float(df["seconds"].median()),
         "avg_tokens": float((df["prompt_tokens"] + df["completion_tokens"]).mean()),
+        "total_prompt_tokens": int(df["prompt_tokens"].sum()),
+        "total_cached_prompt_tokens": int(df["cached_prompt_tokens"].sum()),
+        "total_completion_tokens": int(df["completion_tokens"].sum()),
     }  # fmt: skip
     slug = model.name.replace("/", "_").replace(":", "_")
     df.to_csv(paths.outputs / f"assistant_eval_{slug}.csv", index=False)

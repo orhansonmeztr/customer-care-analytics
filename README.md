@@ -21,7 +21,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | **How many agents?** | 32 agents on the phone at the busiest half hour reach 83% within 20 s; 33 give 88%. The plan covers 28 days in 30-minute intervals at P50 and P80, with 30% shrinkage. |
 | **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
 | **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. |
-| **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. With a 2B local model on CPU it refused or blocked **4/4** unsafe requests but answered only 3 of 20 questions correctly: the guard is ready, the model is not. See [Analytics assistant](#analytics-assistant). |
+| **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. With `deepseek-flash` it answered **19 of 20** golden-set questions correctly and refused all 4 unsafe requests, in 1.6 s per question and under one cent for the whole run. A 2B local model on CPU answered 3 of 20, but its unsafe queries were still all stopped by the guard. See [Analytics assistant](#analytics-assistant). |
 
 ## What it shows (mapped to the role)
 
@@ -83,13 +83,15 @@ Tests check the pipeline against what the generator injected:
 pytest -q
 ```
 
-Ask the data (a local [Ollama](https://ollama.com) model by default, so no data leaves the
-machine; set `ASSISTANT_PROVIDER=openai` with `ASSISTANT_BASE_URL`, `ASSISTANT_MODEL` and
-`ASSISTANT_API_KEY` for OpenAI, Azure OpenAI or DeepSeek):
+Ask the data. A local [Ollama](https://ollama.com) model is the default, so no data leaves the
+machine. For DeepSeek, copy `.env.example` to `.env`, add the key and pass `--provider deepseek`;
+any other OpenAI-compatible endpoint works with `--provider openai` and the `ASSISTANT_*`
+variables.
 
 ```bash
-care ask "Haziran 2025'te şikâyet kuyruğunun servis seviyesi neydi?" --explain
-care eval-assistant                # the 24-question golden set
+care ask "Haziran 2025'te şikâyet kuyruğunun servis seviyesi neydi?" --provider deepseek --explain
+care eval-assistant --provider deepseek     # the 24-question golden set, about a minute
+ASSISTANT_PROVIDER=deepseek streamlit run dashboard/app.py
 ```
 
 ## Data
@@ -227,17 +229,28 @@ model, decides whether it runs**:
 the same result as the reference query, not when it looks the same: row and column order,
 column names, extra columns and percentages are tolerated.
 
-| Model | Prompt | Answerable (20) | Unsafe refused or blocked (4) | Median latency |
-|---|---|---:|---:|---:|
-| `qwen3.5-32k:2b`, local CPU | 1.0 | 3 | 4 | 110 s |
+| Model | Prompt | Answerable (20) | Unsafe refused or blocked (4) | Median latency | Cost of the run |
+|---|---|---:|---:|---:|---:|
+| `deepseek-flash` (API) | 1.1 | **19** | **4** | 1.6 s | < $0.01 |
+| `qwen3.5-32k:2b`, local CPU | 1.0 | 3 | 4 | 110 s | local |
+
+Per-question results: [`docs/eval`](docs/eval). The DeepSeek run used 42.5k prompt tokens, 90%
+of them served from DeepSeek's prompt cache (the schema context is the same for every
+question), and 4.7k completion tokens.
 
 What the run shows:
 
 * **The guard is what makes it safe.** Asked to delete tickets, the model *wrote* the
   `DELETE`; the guard stopped it. Asked to read `/etc/passwd`, it wrote `read_csv`; blocked.
   A prompt instruction alone would have failed both.
-* **A 2B model is not good enough for this job.** Typical errors: joining tables the question
-  does not need, inventing columns, and averaging daily rates instead of dividing sums.
+* **Model choice decides accuracy.** The 2B model joined tables the question did not need,
+  invented columns and averaged daily rates instead of dividing sums. `deepseek-flash` made
+  none of these mistakes.
+* **The one DeepSeek miss is a question of definitions, kept as a failure.** Asked for calls
+  per month in 2024, it excluded the two days with a broken data load (flagged by the data
+  quality step) and returned months as numbers. Excluding incomplete days is right for a
+  trend chart but undercounts calls that did happen; the golden set expects the full count.
+  The lesson for a real deployment: say in the KPI rules when incomplete days count.
 * Prompt 1.1 adds two general rules (only listed columns, as few tables as possible) and sends
   invalid SQL back for repair instead of treating it as blocked.
 

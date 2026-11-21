@@ -32,6 +32,7 @@ class AskResult:
     attempts: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_prompt_tokens: int = 0
     seconds: float = 0.0
     history: list[str] = field(default_factory=list)
 
@@ -72,6 +73,7 @@ class Assistant:
             reply = self.model.chat(messages)
             res.prompt_tokens += reply.prompt_tokens
             res.completion_tokens += reply.completion_tokens
+            res.cached_prompt_tokens += reply.cached_prompt_tokens
             res.history.append(reply.text)
             messages.append({"role": "assistant", "content": reply.text})
 
