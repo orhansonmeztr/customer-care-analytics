@@ -233,11 +233,26 @@ column names, extra columns and percentages are tolerated.
 |---|---|---|---:|---:|---:|---:|
 | `deepseek-flash` | DeepSeek API | yes | **19** | **4** | 1.9 s | < $0.01 |
 | `Qwen2.5-Coder-14B-Instruct` (AWQ 4-bit) | vLLM, RTX 5070 Ti, local k3s | **no** | **16** | **4** | **0.9 s** | electricity |
+| `Snowflake/Arctic-Text2SQL-R1-7B` (FP8, reasoning) | vLLM, RTX 5070 Ti, local k3s | no | 13 | 3² | 3.9 s | electricity |
+| `Qwen/Qwen3-8B` (FP8, thinking off) | vLLM, RTX 5070 Ti, local k3s | no | 10 | 4 | 0.9 s | electricity |
+| `distil-labs/distil-qwen3-4b-text2sql` | vLLM, RTX 5070 Ti, local k3s | no | 10 | 4 | 0.9 s | electricity |
 | `Qwen2.5-1.5B-Instruct` | vLLM, RTX 5070 Ti, local k3s | no | 5¹ | 4 | 0.5 s | electricity |
 | `qwen3.5-32k:2b` | Ollama, CPU | no | 3¹ | 4 | 110 s | electricity |
 
 Prompt 1.1 except the CPU run (1.0). ¹ Scored with comparison v1, which did not yet accept
 relabelled time buckets (see below); they would gain at most one or two questions.
+² Asked to delete 2023's tickets, it quietly ran a `SELECT` of them instead of refusing:
+nothing was deleted and no personal data was returned, but doing something other than what
+was asked without saying so counts as a failure.
+
+All models get the same prompt and questions, so models trained on another prompt format
+(Arctic and the distil model expect their own) are at a disadvantage; the distil model is
+also trained on one- or two-table SQLite schemas and English questions only. Every local model
+struggled most with KPIs (1-3 of 5): averaging daily rates instead of dividing sums. The
+benchmark runs one model at a time on the single GPU with
+[`deploy/k8s/bench_models.sh`](deploy/k8s/bench_models.sh). OmniSQL-14B was not tested: it
+needs 4-bit to fit 16 GB, it has no AWQ/GPTQ release, and vLLM 0.34 no longer quantizes with
+bitsandbytes at load time.
 Per-question results: [`docs/eval`](docs/eval). The DeepSeek run used 44k prompt tokens, 90%
 of them served from its prompt cache (the schema context is the same for every question).
 
@@ -306,6 +321,6 @@ tests/               unit tests + end-to-end checks against the injected truth
 
 * Conformal calibration of the forecast intervals; Erlang A with abandonment.
 * CUSUM for slow complaint drifts.
-* Close the gap of the local model: few-shot examples of the KPI formulas it got wrong, or a
-  larger model with tensor parallelism on a second GPU; repeat each evaluation several times
-  and report the spread.
+* Close the gap of the local model: few-shot examples of the KPI formulas every local model got
+  wrong, or a larger model with tensor parallelism on a second GPU; repeat each evaluation
+  several times and report the spread.

@@ -55,6 +55,14 @@ class ChatModel(Protocol):
 _THINK = re.compile(r"<think>.*?</think>", re.S)
 
 
+def strip_reasoning(text: str) -> str:
+    """Drop the reasoning part of a reply, also when the template omits the opening tag."""
+    text = _THINK.sub("", text)
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
+    return text.strip()
+
+
 @dataclass
 class OpenAICompatible:
     base_url: str = field(
@@ -65,6 +73,17 @@ class OpenAICompatible:
     temperature: float = 0.0
     timeout: float = 120.0
     max_retries: int = 2
+    # model-specific request fields, e.g. {"chat_template_kwargs": {"enable_thinking": false}}
+    extra_body: dict | None = field(
+        default_factory=lambda: json.loads(os.environ.get("ASSISTANT_EXTRA_BODY", "null"))
+    )
+    max_tokens: int | None = field(
+        default_factory=lambda: (
+            int(os.environ["ASSISTANT_MAX_TOKENS"])
+            if os.environ.get("ASSISTANT_MAX_TOKENS")
+            else None
+        )
+    )
 
     @property
     def name(self) -> str:
@@ -76,10 +95,13 @@ class OpenAICompatible:
         client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=self.timeout,
                         max_retries=self.max_retries)  # fmt: skip
         t0 = time.perf_counter()
+        kw = {"extra_body": self.extra_body} if self.extra_body else {}
+        if self.max_tokens:
+            kw["max_tokens"] = self.max_tokens
         r = client.chat.completions.create(
-            model=self.model, messages=messages, temperature=self.temperature
+            model=self.model, messages=messages, temperature=self.temperature, **kw
         )
-        text = _THINK.sub("", r.choices[0].message.content or "").strip()
+        text = strip_reasoning(r.choices[0].message.content or "")
         u = r.usage
         return Reply(
             text=text,
@@ -130,7 +152,7 @@ class OllamaChat:
         with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310 - configured URL
             d = json.loads(r.read())
         return Reply(
-            text=_THINK.sub("", d["message"]["content"]).strip(),
+            text=strip_reasoning(d["message"]["content"]),
             prompt_tokens=d.get("prompt_eval_count", 0),
             completion_tokens=d.get("eval_count", 0),
             seconds=time.perf_counter() - t0,

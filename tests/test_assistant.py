@@ -152,3 +152,12 @@ def test_time_buckets_may_be_relabelled_but_values_must_match():
     assert results_match(ref, labelled) and results_match(ref, numbered)
     assert not results_match(ref, swapped)
     assert not results_match(ref, labelled, relabel_time=False)
+
+
+def test_reasoning_replies_use_the_final_sql():
+    from care_analytics.assistant.llm import strip_reasoning
+
+    reply = "<think>maybe ```sql\nSELECT 1\n```</think>Answer:\n```sql\nSELECT 2\n```"
+    assert extract_sql(strip_reasoning(reply)) == "SELECT 2"
+    assert strip_reasoning("draft ... </think> ```sql\nSELECT 3\n```").startswith("```sql")
+    assert extract_sql("```sql\nSELECT 1\n```\nfixed:\n```sql\nSELECT 4\n```") == "SELECT 4"

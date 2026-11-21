@@ -38,9 +38,10 @@ class AskResult:
 
 
 def extract_sql(text: str) -> str | None:
-    m = _SQL_BLOCK.search(text)
-    if m:
-        return m.group(1).strip()
+    # the last block is the answer: reasoning models write drafts before it
+    blocks = _SQL_BLOCK.findall(text)
+    if blocks:
+        return blocks[-1].strip()
     stripped = text.strip()
     if re.match(r"(?is)^\s*(select|with)\b", stripped):
         return stripped
