@@ -21,7 +21,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | **How many agents?** | 32 agents on the phone at the busiest half hour reach 83% within 20 s; 33 give 88%. The plan covers 28 days in 30-minute intervals at P50 and P80, with 30% shrinkage. |
 | **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
 | **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. |
-| **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. With `deepseek-flash` it answered **19 of 20** golden-set questions correctly and refused all 4 unsafe requests, in 1.6 s per question and under one cent for the whole run. A 2B local model on CPU answered 3 of 20, but its unsafe queries were still all stopped by the guard. See [Analytics assistant](#analytics-assistant). |
+| **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network) answers 16 of 20 golden-set questions correctly in 0.9 s, with no data leaving the network; the `deepseek-flash` API answers 19 of 20. Every model, down to a 1.5B one, refused or was blocked on all 4 unsafe requests. See [Analytics assistant](#analytics-assistant). |
 
 ## What it shows (mapped to the role)
 
@@ -229,28 +229,46 @@ model, decides whether it runs**:
 the same result as the reference query, not when it looks the same: row and column order,
 column names, extra columns and percentages are tolerated.
 
-| Model | Prompt | Answerable (20) | Unsafe refused or blocked (4) | Median latency | Cost of the run |
-|---|---|---:|---:|---:|---:|
-| `deepseek-flash` (API) | 1.1 | **19** | **4** | 1.6 s | < $0.01 |
-| `qwen3.5-32k:2b`, local CPU | 1.0 | 3 | 4 | 110 s | local |
+| Model | Runs on | Data leaves the network | Answerable (20) | Unsafe refused or blocked (4) | Median latency | Cost of the run |
+|---|---|---|---:|---:|---:|---:|
+| `deepseek-flash` | DeepSeek API | yes | **19** | **4** | 1.9 s | < $0.01 |
+| `Qwen2.5-Coder-14B-Instruct` (AWQ 4-bit) | vLLM, RTX 5070 Ti, local k3s | **no** | **16** | **4** | **0.9 s** | electricity |
+| `Qwen2.5-1.5B-Instruct` | vLLM, RTX 5070 Ti, local k3s | no | 5¹ | 4 | 0.5 s | electricity |
+| `qwen3.5-32k:2b` | Ollama, CPU | no | 3¹ | 4 | 110 s | electricity |
 
-Per-question results: [`docs/eval`](docs/eval). The DeepSeek run used 42.5k prompt tokens, 90%
-of them served from DeepSeek's prompt cache (the schema context is the same for every
-question), and 4.7k completion tokens.
+Prompt 1.1 except the CPU run (1.0). ¹ Scored with comparison v1, which did not yet accept
+relabelled time buckets (see below); they would gain at most one or two questions.
+Per-question results: [`docs/eval`](docs/eval). The DeepSeek run used 44k prompt tokens, 90%
+of them served from its prompt cache (the schema context is the same for every question).
+
+**The local GPU server** ([`deploy/k8s/vllm-qwen-coder-14b.yaml`](deploy/k8s/vllm-qwen-coder-14b.yaml)):
+vLLM 0.34 in the local k3s cluster, on the GPU node, ClusterIP only. The AWQ model takes 9.4 GB
+of the 16 GB card, leaving a 15k-token KV cache (about two 8k-token requests at once); it
+starts in about five minutes on first download. The assistant reaches it through
+`kubectl port-forward` with `--provider openai`.
 
 What the run shows:
 
 * **The guard is what makes it safe.** Asked to delete tickets, the model *wrote* the
   `DELETE`; the guard stopped it. Asked to read `/etc/passwd`, it wrote `read_csv`; blocked.
   A prompt instruction alone would have failed both.
-* **Model choice decides accuracy.** The 2B model joined tables the question did not need,
-  invented columns and averaged daily rates instead of dividing sums. `deepseek-flash` made
-  none of these mistakes.
-* **The one DeepSeek miss is a question of definitions, kept as a failure.** Asked for calls
-  per month in 2024, it excluded the two days with a broken data load (flagged by the data
-  quality step) and returned months as numbers. Excluding incomplete days is right for a
-  trend chart but undercounts calls that did happen; the golden set expects the full count.
-  The lesson for a real deployment: say in the KPI rules when incomplete days count.
+* **Model choice decides accuracy; a 14B model on our own GPU gets most of the way.** The
+  small models joined tables the question did not need, invented columns and averaged daily
+  rates instead of dividing sums. The 14B coder model's real mistakes were fewer and
+  narrower: it computed the service level from all answered calls instead of those answered
+  within 20 seconds, and kept the empty fault code as a group. For a customer care team that
+  must not send data outside, that is the trade-off: 16/20 locally, 19/20 through an API.
+* **Definitions matter as much as SQL.** In its first run DeepSeek excluded the two days with
+  a broken data load from a monthly call count. Right for a trend chart, wrong for a count of
+  calls that did happen. The lesson for a real deployment: say in the KPI rules when
+  incomplete days count. Runs also vary: at temperature 0 the second DeepSeek run passed that
+  question and missed another.
+* **The evaluator was corrected once, openly.** The 14B run failed three answers whose values
+  were right but whose months or weeks were labelled differently (`2024-03`, ISO week 11).
+  Comparison v2 matches a relabelled date bucket by chronological order; the values must
+  still be equal (tested). One such case remains a failure for every model: the reference for
+  "CSAT by month" returns month *numbers*, which v2 does not relabel. The evaluator was not
+  tuned further, to avoid fitting it to the results.
 * Prompt 1.1 adds two general rules (only listed columns, as few tables as possible) and sends
   invalid SQL back for repair instead of treating it as blocked.
 
@@ -269,6 +287,7 @@ src/care_analytics/
   churn.py           post-warranty churn, cost-based call list, explanations
   anomaly.py         complaint early warning
   assistant/         text-to-SQL assistant: guard, context, agent loop, golden set, evaluation
+deploy/k8s/          vLLM deployment of the local model (k3s, one GPU)
   cli.py             `care` command
 dashboard/app.py     Streamlit dashboard
 docs/kpi_definitions.md
@@ -287,6 +306,6 @@ tests/               unit tests + end-to-end checks against the injected truth
 
 * Conformal calibration of the forecast intervals; Erlang A with abandonment.
 * CUSUM for slow complaint drifts.
-* Evaluate the assistant with a stronger model (e.g. `gpt-4.1-mini`, the model behind
-  [retail-rag-assistant](https://github.com/orhansonmeztr/retail-rag-assistant)) and a larger
-  local one on a GPU; report accuracy against cost and latency.
+* Close the gap of the local model: few-shot examples of the KPI formulas it got wrong, or a
+  larger model with tensor parallelism on a second GPU; repeat each evaluation several times
+  and report the spread.

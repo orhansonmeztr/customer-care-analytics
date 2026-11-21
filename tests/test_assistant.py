@@ -142,3 +142,13 @@ def test_agent_retries_invalid_sql(paths):
     res = a.ask(q)
     assert res.status == "answered" and res.attempts == 2
     con.close()
+
+
+def test_time_buckets_may_be_relabelled_but_values_must_match():
+    ref = pd.DataFrame({"m": pd.to_datetime(["2024-01-01", "2024-02-01"]), "n": [10, 20]})
+    labelled = pd.DataFrame({"month": ["2024-01", "2024-02"], "n": [10, 20]})
+    numbered = pd.DataFrame({"month": [2, 1], "n": [20, 10]})
+    swapped = pd.DataFrame({"month": ["2024-01", "2024-02"], "n": [20, 10]})
+    assert results_match(ref, labelled) and results_match(ref, numbered)
+    assert not results_match(ref, swapped)
+    assert not results_match(ref, labelled, relabel_time=False)

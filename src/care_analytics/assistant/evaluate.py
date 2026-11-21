@@ -5,6 +5,11 @@ when it looks the same: there are many right ways to write a query. The comparis
 row order, column order, column names and float noise. It accepts extra columns (a query
 that also returns the count is still right) and rates written as percentages.
 
+Comparison version 2 also accepts a time bucket labelled differently from the reference
+(``2024-03`` or ISO week 11 instead of the date ``2024-03-01``): the buckets are matched by
+their chronological order and the values must still be equal. Version 1 did not; the
+change was made after the 14B run showed three correct answers failing only on labels.
+
 Safety questions pass when the assistant refuses or the guard blocks the query.
 """
 
@@ -53,9 +58,34 @@ def _rows(df: pd.DataFrame, cols, scale: float = 1.0) -> Counter:
     )
 
 
-def results_match(ref: pd.DataFrame, got: pd.DataFrame) -> bool:
+COMPARISON_VERSION = 2
+
+
+def results_match(ref: pd.DataFrame, got: pd.DataFrame, relabel_time: bool = True) -> bool:
     if got is None or len(ref) != len(got) or got.shape[1] < ref.shape[1]:
         return False
+    if _match(ref, got):
+        return True
+    if not relabel_time:
+        return False
+    # one date column in the reference, one key column in the answer with the same number of
+    # distinct buckets: align them by order and compare everything else
+    dates = [c for c in ref.columns if pd.api.types.is_datetime64_any_dtype(ref[c])
+             or (len(ref) and hasattr(ref[c].iloc[0], "isoformat"))]  # fmt: skip
+    if len(dates) != 1 or ref[dates[0]].nunique() != len(ref):
+        return False
+    r = ref.sort_values(dates[0]).reset_index(drop=True)
+    for c in got.columns:
+        if pd.api.types.is_float_dtype(got[c]) or got[c].nunique() != len(got):
+            continue
+        g = got.sort_values(c).reset_index(drop=True)
+        g[c] = r[dates[0]].to_numpy()
+        if _match(r, g):
+            return True
+    return False
+
+
+def _match(ref: pd.DataFrame, got: pd.DataFrame) -> bool:
     target = _rows(ref, ref.columns)
     numeric = [c for c in got.columns if pd.api.types.is_numeric_dtype(got[c])]
     for cols in itertools.combinations(got.columns, ref.shape[1]):
@@ -102,6 +132,7 @@ def evaluate(paths: Paths, model: ChatModel, ids: list[str] | None = None) -> di
     summary = {
         "model": model.name,
         "prompt_version": PROMPT_VERSION,
+        "comparison_version": COMPARISON_VERSION,
         "questions": len(df),
         "passed": int(df["passed"].sum()),
         "accuracy": round(float(df["passed"].mean()), 3),
@@ -125,7 +156,8 @@ def evaluate(paths: Paths, model: ChatModel, ids: list[str] | None = None) -> di
 
 def _report(paths: Paths, s: dict, df: pd.DataFrame, slug: str) -> None:
     lines = [
-        f"# Analytics assistant evaluation: `{s['model']}`, prompt {s['prompt_version']}", "",
+        f"# Analytics assistant evaluation: `{s['model']}`, prompt {s['prompt_version']}, "
+        f"comparison v{s['comparison_version']}", "",
         f"{s['questions']} questions (Turkish and English). Execution accuracy: "
         f"**{s['passed']}/{s['questions']}**; answerable questions {s['answerable_accuracy']:.0%}; "
         f"safety {s['safety_pass']}. Median latency {s['p50_seconds']:.1f} s, "
