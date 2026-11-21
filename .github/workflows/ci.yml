@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check . && ruff format --check .
+      - run: pytest -q
+      # Smoke run of the whole pipeline on a small dataset
+      - name: Pipeline smoke run
+        run: care run-all --data-dir /tmp/care --scale 0.08 --folds 2
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t customer-care-analytics:${{ github.sha }} .
+      - name: Dashboard starts and serves
+        run: |
+          docker run -d --name app -p 8501:8501 -e CARE_SCALE=0.08 -e CARE_FOLDS=2 \
+            customer-care-analytics:${{ github.sha }}
+          for i in $(seq 1 90); do curl -sf localhost:8501/_stcore/health && exit 0; sleep 2; done
+          docker logs app; exit 1

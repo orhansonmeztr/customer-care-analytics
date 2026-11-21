@@ -1,0 +1,43 @@
+[project]
+name = "customer-care-analytics"
+version = "0.1.0"
+description = "End-to-end customer care analytics and capacity planning for a fictional automotive distributor: data quality, star schema, call volume forecasting, Erlang C staffing, segmentation, post-warranty churn and complaint anomaly detection."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.1",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "pyarrow>=16",
+    "scikit-learn>=1.5",
+    "lightgbm>=4.3",
+    "statsmodels>=0.14",
+    "scipy>=1.13",
+]
+
+[project.optional-dependencies]
+dashboard = ["streamlit>=1.38", "altair>=5"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+care = "care_analytics.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/care_analytics"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+# long SQL and report strings are wrapped by hand; the formatter handles code lines
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
