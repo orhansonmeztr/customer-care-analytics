@@ -21,7 +21,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | **How many agents?** | 32 agents on the phone at the busiest half hour reach 83% within 20 s; 33 give 88%. The plan covers 28 days in 30-minute intervals at P50 and P80, with 30% shrinkage. |
 | **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
 | **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. |
-| **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network) answers 16 of 20 golden-set questions correctly in 0.9 s, with no data leaving the network; the `deepseek-flash` API answers 19 of 20. Every model, down to a 1.5B one, refused or was blocked on all 4 unsafe requests. See [Analytics assistant](#analytics-assistant). |
+| **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network) answers 16 of 20 golden-set questions correctly in 0.9 s, with no data leaving the network; through the DeepSeek API, `deepseek-v4-pro` answers all 20 and `deepseek-flash` 19. Every model, down to a 1.5B one, refused or was blocked on all 4 unsafe requests. See [Analytics assistant](#analytics-assistant). |
 
 ## What it shows (mapped to the role)
 
@@ -231,7 +231,8 @@ column names, extra columns and percentages are tolerated.
 
 | Model | Runs on | Data leaves the network | Answerable (20) | Unsafe refused or blocked (4) | Median latency | Cost of the run |
 |---|---|---|---:|---:|---:|---:|
-| `deepseek-flash` | DeepSeek API | yes | **19** | **4** | 1.9 s | < $0.01 |
+| `deepseek-v4-pro` | DeepSeek API | yes | **20** | **4** | 5.6 s | < $0.01 |
+| `deepseek-flash` | DeepSeek API | yes | 19 | 4 | 1.9 s | < $0.01 |
 | `Qwen2.5-Coder-14B-Instruct` (AWQ 4-bit) | vLLM, RTX 5070 Ti, local k3s | **no** | **16** | **4** | **0.9 s** | electricity |
 | `Snowflake/Arctic-Text2SQL-R1-7B` (FP8, reasoning) | vLLM, RTX 5070 Ti, local k3s | no | 13 | 3² | 3.9 s | electricity |
 | `Qwen/Qwen3-8B` (FP8, thinking off) | vLLM, RTX 5070 Ti, local k3s | no | 10 | 4 | 0.9 s | electricity |
@@ -278,12 +279,18 @@ What the run shows:
   calls that did happen. The lesson for a real deployment: say in the KPI rules when
   incomplete days count. Runs also vary: at temperature 0 the second DeepSeek run passed that
   question and missed another.
+* **The golden set is saturated for the strongest model.** `deepseek-v4-pro` answered every
+  question, including the CSAT-by-month one the other models missed, at three times
+  flash's latency and 2.5 times its output tokens. 24 questions can no longer separate the
+  best models; harder questions (multi-step KPIs, windows, ambiguous wording) are the next
+  step for the set.
 * **The evaluator was corrected once, openly.** The 14B run failed three answers whose values
   were right but whose months or weeks were labelled differently (`2024-03`, ISO week 11).
   Comparison v2 matches a relabelled date bucket by chronological order; the values must
-  still be equal (tested). One such case remains a failure for every model: the reference for
-  "CSAT by month" returns month *numbers*, which v2 does not relabel. The evaluator was not
-  tuned further, to avoid fitting it to the results.
+  still be equal (tested). One such case still fails for every model that labels months as
+  `2025-01`: the reference for "CSAT by month" returns month *numbers*, which v2 does not
+  relabel (`deepseek-v4-pro` returned numbers and passed). The evaluator was not tuned
+  further, to avoid fitting it to the results.
 * Prompt 1.1 adds two general rules (only listed columns, as few tables as possible) and sends
   invalid SQL back for repair instead of treating it as blocked.
 
