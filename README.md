@@ -20,7 +20,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | **How many calls next month?** | LightGBM forecasts the whole month on its first day with **9.7% WAPE**, against 15.5% for the best simple baseline. The gap is widest on holidays (22% vs 91–102%), because religious holidays move every year and "same day last year" breaks. |
 | **How many agents?** | Planned on a conformal-calibrated P80 forecast with **Erlang A**, which models callers who hang up (patience estimated from the data: 115 s). It needs **4.4% fewer agent hours** than Erlang C for the same 80/20 target, with abandonment capped at 5%; the Erlang C plan would over-deliver at 92%. 28 days in 30-minute intervals, 30% shrinkage. |
 | **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
-| **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. |
+| **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. A daily CUSUM was tested against it at equal false alarms and caught the drift no earlier. |
 | **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network) answers 16 of 20 golden-set questions correctly in 0.9 s, with no data leaving the network; through the DeepSeek API, `deepseek-flash` answers 19 of 20 in each of three runs and `deepseek-v4-pro` 20. The local model is the default; DeepSeek is used only when chosen explicitly, because data then leaves the network (see [recommended configuration](#recommended-configuration)). See [Analytics assistant](#analytics-assistant). |
 
 ## What it shows (mapped to the role)
@@ -231,7 +231,26 @@ series.
 | Brake complaints, Kestrel K3 (recall) | 2024-03-01 | 2 days |
 | Battery complaints, Volta E (slow drift) | 2025-02-02 | 21 days |
 
-23 alerts, 22 on the planted problems. A CUSUM chart would catch the slow drift earlier.
+23 alerts, 22 on the planted problems.
+
+**A daily CUSUM for slow drifts, and why it did not win.** The obvious way to catch the slow
+battery drift earlier is a Poisson CUSUM, which adds up small daily excesses. It is built
+here with a per-car baseline taken with a four-week guard gap (so the drift does not become the
+new normal), a day-of-week factor, and a threshold per series set by Monte Carlo for a target
+false-alarm interval. Compared at equal false alarms:
+
+| Detector | False alarms | Battery drift detected after |
+|---|---:|---:|
+| Weekly test | 1 | 21 days |
+| CUSUM, one false alarm per series every 50 years (default) | 3 | 21 days |
+| CUSUM, every 10 years | 16 | 20 days |
+| CUSUM, every 2 years, 84-day baseline | 64 | 16 days |
+
+On this data the CUSUM is earlier only by raising many more alarms: the drift grows linearly
+from zero and the weekly test already uses a per-car baseline. Real false alarms also run
+above the design rate although the counts are close to Poisson (dispersion 1.03), because the
+baseline is itself an estimate. The CUSUM stays as a second detector that can fire on any
+day; the comparison is regenerated with every run (`data/reports/complaint_alerts.md`).
 
 ### Analytics assistant
 
@@ -291,7 +310,7 @@ of them served from its prompt cache (the schema context is the same for every q
 vLLM 0.34 in the local k3s cluster, on the GPU node, ClusterIP only. The AWQ model takes 9.4 GB
 of the 16 GB card, leaving a 15k-token KV cache (about two 8k-token requests at once); it
 starts in about five minutes on first download. The assistant reaches it through
-`kubectl port-forward` with `--provider openai`.
+`kubectl port-forward`; it is the default `vllm` provider.
 
 What the run shows:
 
@@ -347,6 +366,16 @@ What the run shows:
   model wrapping its refusal in a query (`SELECT 'REFUSE: ...'`); the assistant now treats
   that as a refusal instead of showing it as a result.
 
+* **The evaluator was corrected once, openly.** The 14B run failed three answers whose values
+  were right but whose months or weeks were labelled differently (`2024-03`, ISO week 11).
+  Comparison v2 matches a relabelled date bucket by chronological order; the values must
+  still be equal (tested). One such case still fails for every model that labels months as
+  `2025-01`: the reference for "CSAT by month" returns month *numbers*, which v2 does not
+  relabel (`deepseek-v4-pro` returned numbers and passed). The evaluator was not tuned
+  further, to avoid fitting it to the results.
+* Prompt 1.1 adds two general rules (only listed columns, as few tables as possible) and sends
+  invalid SQL back for repair instead of treating it as blocked.
+
 ### Recommended configuration
 
 | Situation | Provider | Why |
@@ -358,15 +387,6 @@ What the run shows:
 `deepseek-v4-pro` was not more accurate than flash where it mattered (the hard set) and is
 three times slower, so flash is the API choice. Whatever the model, the guard decides what
 runs: no configuration lets a model reach personal-data columns or change data.
-* **The evaluator was corrected once, openly.** The 14B run failed three answers whose values
-  were right but whose months or weeks were labelled differently (`2024-03`, ISO week 11).
-  Comparison v2 matches a relabelled date bucket by chronological order; the values must
-  still be equal (tested). One such case still fails for every model that labels months as
-  `2025-01`: the reference for "CSAT by month" returns month *numbers*, which v2 does not
-  relabel (`deepseek-v4-pro` returned numbers and passed). The evaluator was not tuned
-  further, to avoid fitting it to the results.
-* Prompt 1.1 adds two general rules (only listed columns, as few tables as possible) and sends
-  invalid SQL back for repair instead of treating it as blocked.
 
 ## Project structure
 
@@ -400,7 +420,6 @@ tests/               unit tests + end-to-end checks against the injected truth
 
 ## Next steps
 
-* CUSUM for slow complaint drifts.
 * Validate Erlang A against observed intervals (it needs the number of agents actually logged
   in, which the synthetic PBX does not record); skills-based routing instead of one pool.
 * Close the gap of the local model: few-shot examples of the KPI formulas every local model got

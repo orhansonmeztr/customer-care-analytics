@@ -186,3 +186,51 @@ def test_calibration_uses_only_earlier_folds():
     bt = calibrate_backtest(pd.DataFrame(rows), min_folds=2)
     assert bt.groupby("cutoff")["lgbm_p80_cal"].apply(lambda s: s.isna().all()).iloc[:2].all()
     assert bt.loc[bt["cutoff"] == bt["cutoff"].max(), "lgbm_p80_cal"].max() < 200
+
+
+# ---------------------------------------------------------------------------- CUSUM
+def test_cusum_threshold_meets_the_design_false_alarm_rate():
+    from care_analytics.anomaly import cusum_threshold
+
+    lam, arl0 = 1.0, 365
+    h = cusum_threshold(lam, 1.5, arl0)
+    rng = np.random.default_rng(42)  # an independent simulation
+    s, alarms, days = np.zeros(2000), 0, 1000
+    for _ in range(days):
+        s = np.maximum(0, s + rng.poisson(lam, 2000) * np.log(1.5) - 0.5 * lam)
+        hit = s > h
+        alarms += hit.sum()
+        s[hit] = 0
+    assert alarms / (2000 * days) <= 1.25 / arl0  # at most the design rate, plus noise
+    assert cusum_threshold(lam, 1.5, 10 * arl0) > h  # a rarer false alarm needs a higher bar
+
+
+def _daily(n_days=500, drift_from=None, seed=0):
+    rng = np.random.default_rng(seed)
+    days = pd.date_range("2024-01-01", periods=n_days)
+    lam = np.full(n_days, 2.0)
+    if drift_from is not None:
+        lam[drift_from:] *= 1 + np.minimum(np.arange(n_days - drift_from) / 30, 1.0)  # to 2x
+    return pd.DataFrame({"model": "M", "fault_code": "X", "day": days,
+                         "n": rng.poisson(lam), "park": 1000})  # fmt: skip
+
+
+def test_cusum_catches_a_drift_and_stays_quiet_without_one():
+    from care_analytics.anomaly import cusum_detect
+
+    quiet = cusum_detect(_daily(), arl0=3650)
+    assert quiet["alarm"].sum() <= 1
+    drift = cusum_detect(_daily(drift_from=350), arl0=3650)
+    first = drift.loc[drift["alarm"], "day"].min()
+    assert first >= pd.Timestamp("2024-01-01") + pd.Timedelta(days=350)
+    assert (first - (pd.Timestamp("2024-01-01") + pd.Timedelta(days=350))).days <= 30
+
+
+def test_weekday_factors_follow_the_weekly_pattern():
+    from care_analytics.anomaly import weekday_factors
+
+    d = _daily(n_days=400)
+    d["n"] = np.where(d["day"].dt.day_of_week == 0, 4, 2)  # busy Mondays
+    f = weekday_factors(d).dropna()
+    mondays = f[f.index.day_of_week == 0]
+    assert mondays.mean() == pytest.approx(4 / (4 + 6 * 2) * 7, rel=0.05)

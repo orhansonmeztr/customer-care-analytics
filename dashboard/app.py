@@ -402,6 +402,24 @@ with tabs[4]:
         + base.mark_line(color="black").encode(y="baseline:Q"),
         width="stretch",
     )
+    cus_file = OUT / "complaint_cusum.parquet"
+    if cus_file.exists():
+        cus = out("complaint_cusum")
+        cs = cus[(cus["model"] == model) & (cus["fault_code"] == fault)].dropna(subset=["cusum"])
+        if len(cs):
+            st.caption(
+                "Daily CUSUM for the same series: it adds up small daily excesses over the "
+                "baseline and alarms (red) when it crosses the threshold (dashed)."
+            )
+            cb = alt.Chart(cs).encode(x=alt.X("day:T", title=None))
+            st.altair_chart(
+                cb.mark_line().encode(y=alt.Y("cusum:Q", title="CUSUM"))
+                + cb.mark_rule(strokeDash=[4, 4], color="gray").encode(y="mean(threshold):Q")
+                + alt.Chart(cs[cs["alarm"]])
+                .mark_point(color="#dc2626", size=60)
+                .encode(x="day:T", y="cusum:Q"),
+                width="stretch",
+            )
 
 with tabs[5]:
     s = summary("data_quality")
