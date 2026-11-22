@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "End-to-end customer care analytics and capacity planning for a fictional automotive distributor: data quality, star schema, call volume forecasting, Erlang C staffing, segmentation, post-warranty churn and complaint anomaly detection."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = [
     "duckdb>=1.1",
     "pandas>=2.2",
