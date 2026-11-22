@@ -10,7 +10,6 @@ data/
 data_*/
 private/
 *.log
-.claude/
 .env
 .env.*
 !.env.example

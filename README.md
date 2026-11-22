@@ -561,3 +561,7 @@ tests/               unit tests + end-to-end checks against the injected truth
 
 * Multi-step questions are where both models still fail: a second held-out set aimed at
   them, and a larger local model with tensor parallelism on a second GPU.
+
+## License
+
+[MIT](LICENSE). The data is synthetic; Meridian Auto and its brands are fictional.
