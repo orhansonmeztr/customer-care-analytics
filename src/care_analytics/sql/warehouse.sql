@@ -109,3 +109,8 @@ SELECT interval_start, CAST(interval_start AS DATE) AS call_date,
     count(*) FILTER (WHERE answered_in_20s) / nullif(count(*) - count(*) FILTER (WHERE is_short_abandon), 0)
         AS service_level_20s
 FROM fact_calls GROUP BY ALL;
+
+-- v_customer: dim_customer without personal data; the analytics assistant only sees this
+CREATE OR REPLACE VIEW v_customer AS
+SELECT customer_id, city, region, nearest_service_km, created_at, n_source_records
+FROM dim_customer;

@@ -21,6 +21,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | **How many agents?** | 32 agents on the phone at the busiest half hour reach 83% within 20 s; 33 give 88%. The plan covers 28 days in 30-minute intervals at P50 and P80, with 30% shrinkage. |
 | **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
 | **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. |
+| **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network) answers 16 of 20 golden-set questions correctly in 0.9 s, with no data leaving the network; through the DeepSeek API, `deepseek-flash` answers 19 of 20 in each of three runs and `deepseek-v4-pro` 20. The local model is the default; DeepSeek is used only when chosen explicitly, because data then leaves the network (see [recommended configuration](#recommended-configuration)). See [Analytics assistant](#analytics-assistant). |
 
 ## What it shows (mapped to the role)
 
@@ -36,6 +37,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | Classification | Out-of-time validation, leakage guard, calibration (Brier), lift, cost-based threshold, explanations |
 | Anomaly detection | Poisson baselines per car on the road, Benjamini-Hochberg false discovery control |
 | Dashboards | Streamlit app; CSV extracts for Tableau / Power BI in `data/exports` |
+| AI decision support | Text-to-SQL assistant with a SQL guard, a golden set scored by execution accuracy and versioned prompts ([`assistant/`](src/care_analytics/assistant)) |
 | Engineering | CLI, tests on the injected truth, GitHub Actions, Docker |
 
 ## Architecture
@@ -52,6 +54,8 @@ flowchart LR
     W --> C[Service churn<br/>call list]
     W --> A[Complaint<br/>early warning]
     W & P & SEG & C & A --> D[Dashboard<br/>+ CSV exports]
+    W --> AS[Analytics assistant<br/>LLM -> SQL guard -> read-only query]
+    AS --> D
     G -. ground truth .-> T{{Scoring:<br/>tests and reports}}
 ```
 
@@ -77,6 +81,18 @@ Tests check the pipeline against what the generator injected:
 
 ```bash
 pytest -q
+```
+
+Ask the data. The default model runs on the local GPU node, so no data leaves the network;
+open a tunnel to it first. Without the GPU node, `--provider ollama` uses a small CPU model.
+For DeepSeek, copy `.env.example` to `.env`, add the key and pass `--provider deepseek`.
+
+```bash
+kubectl -n llm port-forward svc/vllm-coder 18001:8000 &      # local GPU model (default)
+care ask "Haziran 2025'te şikâyet kuyruğunun servis seviyesi neydi?" --explain
+care ask "Which queue had the lowest service level in March 2024?" --provider deepseek
+care eval-assistant --set hard --provider deepseek           # about a minute
+ASSISTANT_PROVIDER=deepseek streamlit run dashboard/app.py
 ```
 
 ## Data
@@ -190,6 +206,141 @@ series.
 
 23 alerts, 22 on the planted problems. A CUSUM chart would catch the slow drift earlier.
 
+### Analytics assistant
+
+A manager asks in Turkish or English; the model writes one DuckDB query; **code, not the
+model, decides whether it runs**:
+
+1. **Guard** ([`guard.py`](src/care_analytics/assistant/guard.py)), on the parsed SQL tree
+   (sqlglot): exactly one read-only statement; allow-listed analytics tables only, where
+   customers are seen through a view without names, phones or e-mails; no personal-data
+   columns; no table functions that read files or URLs; a row limit.
+2. **Connection:** read-only, external access disabled and locked so a query cannot switch it
+   back on, with a time limit.
+3. **Loop:** a database error or invalid SQL goes back to the model for up to two repairs.
+   A blocked query does not: the model does not get to search for a way around the guard.
+   Refused, blocked and failed are reported separately.
+4. **Context** ([`context.py`](src/care_analytics/assistant/context.py)): columns, the values
+   of category columns (the complaint queue is `sikayet`), KPI formulas (rates are ratios of
+   sums) and the data period. The prompt is versioned; each version's result is kept in
+   [`docs/eval`](docs/eval).
+
+**Evaluation:** 24 questions in 7 categories, Turkish and English, including 4 unsafe requests
+(personal data, delete, prompt injection, reading a file). A query is correct when it returns
+the same result as the reference query, not when it looks the same: row and column order,
+column names, extra columns and percentages are tolerated.
+
+| Model | Runs on | Data leaves the network | Answerable (20) | Unsafe refused or blocked (4) | Median latency | Cost of the run |
+|---|---|---|---:|---:|---:|---:|
+| `deepseek-v4-pro` | DeepSeek API | yes | **20** | **4** | 5.6 s | < $0.01 |
+| `deepseek-flash` | DeepSeek API | yes | 19³ | 4³ | 1.9 s | < $0.01 |
+| `Qwen2.5-Coder-14B-Instruct` (AWQ 4-bit) | vLLM, RTX 5070 Ti, local k3s | **no** | **16** | **4** | **0.9 s** | electricity |
+| `Snowflake/Arctic-Text2SQL-R1-7B` (FP8, reasoning) | vLLM, RTX 5070 Ti, local k3s | no | 13 | 3² | 3.9 s | electricity |
+| `Qwen/Qwen3-8B` (FP8, thinking off) | vLLM, RTX 5070 Ti, local k3s | no | 10 | 4 | 0.9 s | electricity |
+| `distil-labs/distil-qwen3-4b-text2sql` | vLLM, RTX 5070 Ti, local k3s | no | 10 | 4 | 0.9 s | electricity |
+| `Qwen2.5-1.5B-Instruct` | vLLM, RTX 5070 Ti, local k3s | no | 5¹ | 4 | 0.5 s | electricity |
+| `qwen3.5-32k:2b` | Ollama, CPU | no | 3¹ | 4 | 110 s | electricity |
+
+Prompt 1.1 except the CPU run (1.0) and flash. ³ `deepseek-flash` with prompt 1.2: three
+runs, 19/20 and 4/4 every time; the question it misses changes between runs
+([`docs/eval`](docs/eval/deepseek-flash_prompt-1.2_3-runs.md)). ¹ Scored with comparison v1, which did not yet accept
+relabelled time buckets (see below); they would gain at most one or two questions.
+² Asked to delete 2023's tickets, it quietly ran a `SELECT` of them instead of refusing:
+nothing was deleted and no personal data was returned, but doing something other than what
+was asked without saying so counts as a failure.
+
+All models get the same prompt and questions, so models trained on another prompt format
+(Arctic and the distil model expect their own) are at a disadvantage; the distil model is
+also trained on one- or two-table SQLite schemas and English questions only. Every local model
+struggled most with KPIs (1-3 of 5): averaging daily rates instead of dividing sums. The
+benchmark runs one model at a time on the single GPU with
+[`deploy/k8s/bench_models.sh`](deploy/k8s/bench_models.sh). OmniSQL-14B was not tested: it
+needs 4-bit to fit 16 GB, it has no AWQ/GPTQ release, and vLLM 0.34 no longer quantizes with
+bitsandbytes at load time.
+Per-question results: [`docs/eval`](docs/eval). The DeepSeek run used 44k prompt tokens, 90%
+of them served from its prompt cache (the schema context is the same for every question).
+
+**The local GPU server** ([`deploy/k8s/vllm-qwen-coder-14b.yaml`](deploy/k8s/vllm-qwen-coder-14b.yaml)):
+vLLM 0.34 in the local k3s cluster, on the GPU node, ClusterIP only. The AWQ model takes 9.4 GB
+of the 16 GB card, leaving a 15k-token KV cache (about two 8k-token requests at once); it
+starts in about five minutes on first download. The assistant reaches it through
+`kubectl port-forward` with `--provider openai`.
+
+What the run shows:
+
+* **The guard is what makes it safe.** Asked to delete tickets, the model *wrote* the
+  `DELETE`; the guard stopped it. Asked to read `/etc/passwd`, it wrote `read_csv`; blocked.
+  A prompt instruction alone would have failed both.
+* **Model choice decides accuracy; a 14B model on our own GPU gets most of the way.** The
+  small models joined tables the question did not need, invented columns and averaged daily
+  rates instead of dividing sums. The 14B coder model's real mistakes were fewer and
+  narrower: it computed the service level from all answered calls instead of those answered
+  within 20 seconds, and kept the empty fault code as a group. For a customer care team that
+  must not send data outside, that is the trade-off: 16/20 locally, 19/20 through an API.
+* **Definitions matter as much as SQL.** In its first run DeepSeek excluded the two days with
+  a broken data load from a monthly call count. Right for a trend chart, wrong for a count of
+  calls that did happen. The lesson for a real deployment: say in the KPI rules when
+  incomplete days count. Runs also vary: at temperature 0 the second DeepSeek run passed that
+  question and missed another.
+* **The core set is saturated for the strongest model, so there is a hard set.**
+  `deepseek-v4-pro` answered all 24 core questions. The hard set
+  ([`golden_set_hard.json`](src/care_analytics/assistant/golden_set_hard.json),
+  `care eval-assistant --set hard`) has 13 questions that need top-per-group, month-over-month
+  windows, a repeat-contact rate, holiday vs normal days, a post-warranty cohort, a
+  percentile, a share of total, a first week over a threshold, and one indirect request for
+  phone numbers:
+
+  | Model | Prompt | Automatic score | Real errors | Notes |
+  |---|---|---:|---:|---|
+  | `deepseek-flash` | **1.2**, 3 runs | **11-12/13** (mean 11.7) | 3 in 39 answers | median 3.6-4.1 s |
+  | `deepseek-flash` | 1.2, single run | 13/13 | 0 | median 3.5 s |
+  | `deepseek-flash` | 1.1 | 12/13 | 0 | median 3.6 s |
+  | `deepseek-v4-pro` | 1.1 | 10/13 | 1 | median 10.3 s, 2.4x the output tokens |
+
+  Reviewed by hand: pro's real error filtered the months *before* the `LAG()` window, so
+  January had no previous month to compare with. Its holiday answer had the right numbers
+  labelled `bayram`/`diger` instead of true/false. The question both models "missed" is a
+  flaw in the reference: 3,429 of the complaint calls have no reason code, so their repeat
+  flag is NULL; the reference leaves them out, the models count them as "no repeat", and the
+  schema context never says which is meant. **Prompt 1.2** states the rule (repeat_7d is NULL
+  when it cannot be known; a repeat rate is computed over non-NULL calls, with the formula, as
+  the other KPI definitions are). Re-run on `deepseek-flash` only: that question now passes and
+  no other result changed. The lesson is the same as for the incomplete-load days: the
+  assistant is only as good as the definitions written down for it. The extra reasoning of
+  the pro model bought nothing on this set. The local 14B model was not run on the hard set
+  (the GPU node was off).
+* **One run is not a result.** That 13/13 did not repeat: three more runs of flash on the hard
+  set gave 12, 11 and 12. Across them, three real errors in 39 answers: filtering before
+  `LAG()` (the same mistake as pro), inventing holiday type values that are not in the data
+  (the context lists category values for some columns but not this one), and an inner join
+  that dropped tickets of unknown cars from a share's denominator. Once it answered the
+  phone-number request with customer ids only, silently leaving out the phones: no personal
+  data, but not the refusal it should be. On the core set the three runs gave 23/24 each,
+  with the missed question changing between runs. A first prompt-1.2 core run also showed a
+  model wrapping its refusal in a query (`SELECT 'REFUSE: ...'`); the assistant now treats
+  that as a refusal instead of showing it as a result.
+
+### Recommended configuration
+
+| Situation | Provider | Why |
+|---|---|---|
+| Real customer data (default) | `vllm`: Qwen2.5-Coder-14B on the local GPU node | Questions, schema and results stay in the network. 16/20 on the core set; misses some KPI definitions. |
+| GPU node off | `ollama`: small model on CPU | Keeps data local, but 3/20: a fallback for trying the tool, not for answers. |
+| Synthetic or approved data, best accuracy | `deepseek` (`deepseek-flash`) | 19/20 on the core set in every run, 11-12/13 on the hard set, about 2 s per question, under a cent per evaluation. Data goes to a provider abroad: for real customer data this is a cross-border transfer under KVKK and needs legal approval first. |
+
+`deepseek-v4-pro` was not more accurate than flash where it mattered (the hard set) and is
+three times slower, so flash is the API choice. Whatever the model, the guard decides what
+runs: no configuration lets a model reach personal-data columns or change data.
+* **The evaluator was corrected once, openly.** The 14B run failed three answers whose values
+  were right but whose months or weeks were labelled differently (`2024-03`, ISO week 11).
+  Comparison v2 matches a relabelled date bucket by chronological order; the values must
+  still be equal (tested). One such case still fails for every model that labels months as
+  `2025-01`: the reference for "CSAT by month" returns month *numbers*, which v2 does not
+  relabel (`deepseek-v4-pro` returned numbers and passed). The evaluator was not tuned
+  further, to avoid fitting it to the results.
+* Prompt 1.1 adds two general rules (only listed columns, as few tables as possible) and sends
+  invalid SQL back for repair instead of treating it as blocked.
+
 ## Project structure
 
 ```
@@ -204,6 +355,8 @@ src/care_analytics/
   segmentation.py    RFM and k-means
   churn.py           post-warranty churn, cost-based call list, explanations
   anomaly.py         complaint early warning
+  assistant/         text-to-SQL assistant: guard, context, agent loop, golden set, evaluation
+deploy/k8s/          vLLM deployment of the local model (k3s, one GPU)
   cli.py             `care` command
 dashboard/app.py     Streamlit dashboard
 docs/kpi_definitions.md
@@ -222,5 +375,6 @@ tests/               unit tests + end-to-end checks against the injected truth
 
 * Conformal calibration of the forecast intervals; Erlang A with abandonment.
 * CUSUM for slow complaint drifts.
-* A natural-language analytics assistant over the star schema (text-to-SQL with an
-  evaluation set), the pattern from [retail-rag-assistant](https://github.com/orhansonmeztr/retail-rag-assistant).
+* Close the gap of the local model: few-shot examples of the KPI formulas every local model got
+  wrong, or a larger model with tensor parallelism on a second GPU; repeat each evaluation
+  several times and report the spread.

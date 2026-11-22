@@ -1,0 +1,73 @@
+# Local model server for the analytics assistant: Qwen2.5-Coder-14B-Instruct (AWQ, 4-bit) on
+# vLLM, on a single 16 GB GPU node in the local k3s cluster. Data stays in the local network.
+#
+#   kubectl apply -f deploy/k8s/vllm-qwen-coder-14b.yaml
+#   kubectl -n llm port-forward svc/vllm-coder 18001:8000
+#   ASSISTANT_BASE_URL=http://localhost:18001/v1 ASSISTANT_MODEL=qwen2.5-coder-14b \
+#     ASSISTANT_API_KEY=none care eval-assistant --provider openai
+#
+# The service is ClusterIP only: nothing is exposed outside the cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-qwen-coder-14b
+  namespace: llm
+  labels: {app: vllm-coder, model: qwen2.5-coder-14b}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}  # one GPU: the old pod must stop before the new one starts
+  selector:
+    matchLabels: {app: vllm-coder, model: qwen2.5-coder-14b}
+  template:
+    metadata:
+      labels: {app: vllm-coder, model: qwen2.5-coder-14b}
+    spec:
+      runtimeClassName: nvidia
+      nodeSelector: {nvidia.com/gpu.present: "true"}
+      tolerations:  # the GPU node only takes pods that ask for the GPU
+        - {key: nvidia.com/gpu, operator: Equal, value: "true", effect: NoSchedule}
+      enableServiceLinks: false
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.34.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --model=Qwen/Qwen2.5-Coder-14B-Instruct-AWQ
+            - --served-model-name=qwen2.5-coder-14b
+            - --max-model-len=8192
+            - --gpu-memory-utilization=0.92
+            - --max-num-seqs=8
+          env:
+            - {name: HF_HUB_OFFLINE, value: "0"}  # first start downloads ~10 GB into the cache
+          ports: [{name: http, containerPort: 8000}]
+          resources:
+            requests: {cpu: "2", memory: 8Gi, nvidia.com/gpu: "1"}
+            limits: {memory: 24Gi, nvidia.com/gpu: "1"}
+          startupProbe:  # download + load + CUDA graph capture: allow 30 minutes
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            failureThreshold: 180
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 20
+          volumeMounts:
+            - {name: hf-cache, mountPath: /root/.cache/huggingface}
+            - {name: shm, mountPath: /dev/shm}
+      volumes:
+        - name: hf-cache
+          hostPath: {path: /home/orhan/.cache/huggingface, type: Directory}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 4Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-coder
+  namespace: llm
+spec:
+  type: ClusterIP
+  selector: {app: vllm-coder, model: qwen2.5-coder-14b}
+  ports: [{name: http, port: 8000, targetPort: http}]

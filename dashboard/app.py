@@ -84,6 +84,7 @@ tabs = st.tabs(
         "Service churn",
         "Complaint alerts",
         "Data quality",
+        "Ask the data",
     ]
 )
 
@@ -445,3 +446,40 @@ with tabs[5]:
             ),
             use_container_width=True,
         )
+
+with tabs[6]:
+    from care_analytics.assistant.agent import Assistant
+    from care_analytics.assistant.evaluate import load_golden
+    from care_analytics.assistant.guard import connect_read_only
+    from care_analytics.assistant.llm import default_model
+
+    model = default_model()
+    st.caption(
+        f"Text-to-SQL over the star schema with `{model.name}`. Every query passes a guard: one "
+        "read-only SELECT, allow-listed tables, no personal-data columns, a row limit, on a "
+        "read-only connection. The default model runs on the local GPU node, so no data leaves "
+        "the network; set ASSISTANT_PROVIDER=deepseek for the most accurate model."
+    )
+    examples = [g["question"] for g in load_golden()]
+    pick = st.selectbox("Example questions", [""] + examples)
+    question = st.text_input("Your question", value=pick)
+    if st.button("Ask", type="primary") and question.strip():
+        with st.spinner("Writing and checking the query..."):
+            con = connect_read_only(str(DATA / "warehouse.duckdb"))
+            try:
+                res = Assistant(con, model).ask(question, explain=True)
+            except Exception as e:  # noqa: BLE001 - show model connection problems in the page
+                st.error(f"The model could not be reached: {e}")
+                st.stop()
+            finally:
+                con.close()
+        icon = {"answered": "✅", "refused": "🛑", "blocked": "🛡️", "error": "⚠️"}[res.status]
+        st.markdown(f"{icon} **{res.status}** · {res.attempts} attempt(s) · {res.seconds:.0f} s")
+        if res.answer:
+            st.info(res.answer)
+        if res.sql:
+            st.code(res.sql, language="sql")
+        if res.rows is not None:
+            st.dataframe(res.rows, hide_index=True)
+        if res.error and res.status != "answered":
+            st.caption(res.error)
