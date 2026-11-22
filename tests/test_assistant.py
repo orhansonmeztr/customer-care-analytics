@@ -163,14 +163,15 @@ def test_reasoning_replies_use_the_final_sql():
     assert extract_sql("```sql\nSELECT 1\n```\nfixed:\n```sql\nSELECT 4\n```") == "SELECT 4"
 
 
-def test_hard_set_with_perfect_model(paths):
-    golden = load_golden("hard")
+@pytest.mark.parametrize("set_name", ["hard", "holdout"])
+def test_extra_sets_with_perfect_model(paths, set_name):
+    golden = load_golden(set_name)
     replies = {
         g["question"]: [f"```sql\n{g['sql']}\n```" if "sql" in g else "REFUSE: not allowed"]
         for g in golden
     }
-    s = evaluate(paths, ScriptedModel(replies, name="perfect"), set_name="hard")
-    assert s["golden_set"] == "hard" and s["passed"] == s["questions"] == len(golden)
+    s = evaluate(paths, ScriptedModel(replies, name="perfect"), set_name=set_name)
+    assert s["golden_set"] == set_name and s["passed"] == s["questions"] == len(golden)
 
 
 def test_default_provider_is_local(monkeypatch, tmp_path):
@@ -194,3 +195,12 @@ def test_refusal_wrapped_in_a_query_is_a_refusal(paths):
     res = a.ask(q)
     assert res.status == "refused" and "personal data" in res.answer
     con.close()
+
+
+def test_time_buckets_relabelled_when_the_answer_has_the_dates():
+    ref = pd.DataFrame({"m": [1, 2], "csat": [4.1, 4.3]})  # month numbers in the reference
+    dated = pd.DataFrame({"month": pd.to_datetime(["2025-01-01", "2025-02-01"]),
+                          "csat": [4.1, 4.3]})  # fmt: skip
+    wrong = dated.assign(csat=[4.3, 4.1])
+    assert results_match(ref, dated)
+    assert not results_match(ref, wrong)

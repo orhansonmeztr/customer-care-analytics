@@ -29,12 +29,17 @@ from .context import PROMPT_VERSION
 from .guard import connect_read_only, run_query
 from .llm import ChatModel
 
-GOLDEN_SETS = {"core": "golden_set.json", "hard": "golden_set_hard.json"}
+GOLDEN_SETS = {
+    "core": "golden_set.json",
+    "hard": "golden_set_hard.json",
+    "holdout": "golden_set_holdout.json",
+}
 
 
 def load_golden(set_name: str = "core") -> list[dict]:
     """``core``: 24 everyday questions. ``hard``: 13 questions that need windows, cohorts,
-    top-per-group, percentiles or a careful KPI definition."""
+    top-per-group, percentiles or a careful KPI definition. ``holdout``: 12 questions written
+    after the prompt-1.2 failures were studied and never used to tune the prompt."""
     files = resources.files("care_analytics.assistant")
     return json.loads(files.joinpath(GOLDEN_SETS[set_name]).read_text())
 
@@ -62,7 +67,31 @@ def _rows(df: pd.DataFrame, cols, scale: float = 1.0) -> Counter:
     )
 
 
-COMPARISON_VERSION = 2
+COMPARISON_VERSION = 3  # 3: time buckets are relabelled in both directions
+
+
+def _date_cols(df: pd.DataFrame) -> list[str]:
+    return [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])
+            or (len(df) and hasattr(df[c].iloc[0], "isoformat"))]  # fmt: skip
+
+
+def _relabelled_match(ref: pd.DataFrame, got: pd.DataFrame, flip: bool) -> bool:
+    """One date column on one side, one key column with as many distinct buckets on the
+    other (e.g. a month number or a 'YYYY-MM' string): align them by order and compare the
+    rest. ``flip``: the date column is in the answer instead of the reference."""
+    a, b = (got, ref) if flip else (ref, got)
+    dates = _date_cols(a)
+    if len(dates) != 1 or a[dates[0]].nunique() != len(a):
+        return False
+    a = a.sort_values(dates[0]).reset_index(drop=True)
+    for c in b.columns:
+        if pd.api.types.is_float_dtype(b[c]) or b[c].nunique() != len(b):
+            continue
+        bb = b.sort_values(c).reset_index(drop=True)
+        bb[c] = a[dates[0]].to_numpy()
+        if _match(bb, a) if flip else _match(a, bb):
+            return True
+    return False
 
 
 def results_match(ref: pd.DataFrame, got: pd.DataFrame, relabel_time: bool = True) -> bool:
@@ -72,21 +101,7 @@ def results_match(ref: pd.DataFrame, got: pd.DataFrame, relabel_time: bool = Tru
         return True
     if not relabel_time:
         return False
-    # one date column in the reference, one key column in the answer with the same number of
-    # distinct buckets: align them by order and compare everything else
-    dates = [c for c in ref.columns if pd.api.types.is_datetime64_any_dtype(ref[c])
-             or (len(ref) and hasattr(ref[c].iloc[0], "isoformat"))]  # fmt: skip
-    if len(dates) != 1 or ref[dates[0]].nunique() != len(ref):
-        return False
-    r = ref.sort_values(dates[0]).reset_index(drop=True)
-    for c in got.columns:
-        if pd.api.types.is_float_dtype(got[c]) or got[c].nunique() != len(got):
-            continue
-        g = got.sort_values(c).reset_index(drop=True)
-        g[c] = r[dates[0]].to_numpy()
-        if _match(r, g):
-            return True
-    return False
+    return _relabelled_match(ref, got, flip=False) or _relabelled_match(ref, got, flip=True)
 
 
 def _match(ref: pd.DataFrame, got: pd.DataFrame) -> bool:
