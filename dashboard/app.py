@@ -218,7 +218,15 @@ with tabs[1]:
             ),
             hide_index=True,
         )
-        st.caption(f"LightGBM P80 forecast covered {s['p80_coverage']:.0%} of actual days.")
+        cf = s.get("conformal")
+        if cf:
+            st.caption(
+                f"P80 coverage of actual days: {cf['coverage_raw_same_folds']:.0%} raw, "
+                f"{cf['coverage_calibrated']:.0%} after conformal calibration "
+                f"({cf['calibrated_folds']} folds; target 80%)."
+            )
+        else:
+            st.caption(f"LightGBM P80 forecast covered {s['p80_coverage']:.0%} of actual days.")
         bt = out("forecast_backtest")
         long = bt.melt(
             id_vars="ds", value_vars=["y", "lgbm", "naive_7"], var_name="series", value_name="calls"
@@ -285,6 +293,103 @@ with tabs[1]:
             )
             .properties(height=240),
             width="stretch",
+        )
+
+    sv = summary("staffing_validation")
+    if sv:
+        st.subheader("Are the staffing models right? Checked against a simulated, staffed center")
+        acc = sv["accuracy"]
+        names = {"erlang_c": "Erlang C", "erlang_a": "Erlang A"}
+        c1, c2 = st.columns(2)
+        c1.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Model": names[m],
+                        "Service level: mean abs. error": acc["service_level"][m]["mae"],
+                        "Abandonment: mean abs. error": acc["abandonment"][m]["mae"],
+                    }
+                    for m in names
+                ]
+            ).style.format(
+                {
+                    "Service level: mean abs. error": "{:.1%}",
+                    "Abandonment: mean abs. error": "{:.1%}",
+                }
+            ),
+            hide_index=True,
+        )
+        c1.caption(
+            f"Prediction from the agents actually logged in, {acc['intervals']:,} intervals "
+            f"over {sv['days']} simulated days."
+        )
+        dec = sv["decision"]
+        c2.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Plan": names[m],
+                        "Agent hours": dec[m]["planned_agent_hours"],
+                        "Service level": dec[m]["service_level"],
+                        "Abandonment": dec[m]["abandon_rate"],
+                        "Busy intervals at 80/20": dec[m]["intervals_meeting_sl"],
+                    }
+                    for m in names
+                ]
+            ).style.format(
+                {
+                    "Agent hours": "{:,.0f}",
+                    "Service level": "{:.1%}",
+                    "Abandonment": "{:.1%}",
+                    "Busy intervals at 80/20": "{:.0%}",
+                }
+            ),
+            hide_index=True,
+        )
+        c2.caption("What each plan delivers on the same random calls.")
+
+    sr = summary("skills_routing")
+    if sr:
+        st.subheader("Skill groups: dedicated, cross-trained or pooled?")
+        rows = [
+            {
+                "Design": r["plan"],
+                "Extra generalists": r["extra_agents"] if r["passing"] else None,
+                "Agent hours": r["passing"]["agent_hours"] if r["passing"] else None,
+                "vs dedicated": r["passing"]["hours_vs_dedicated"] if r["passing"] else None,
+                "Worst queue SL": r["passing"]["worst_queue_sl"] if r["passing"] else None,
+            }
+            for r in sr["plans"]
+        ]
+        rt = pd.DataFrame(rows)
+        c1, c2 = st.columns([1, 1])
+        c1.altair_chart(
+            alt.Chart(rt.dropna(subset=["Agent hours"]))
+            .mark_bar()
+            .encode(
+                x=alt.X("Agent hours:Q"),
+                y=alt.Y("Design:N", sort=None, title=None),
+                tooltip=["Design", alt.Tooltip("Agent hours:Q", format=",.0f")],
+            )
+            .properties(height=220),
+            width="stretch",
+        )
+        c2.dataframe(
+            rt.style.format(
+                {
+                    "Agent hours": "{:,.0f}",
+                    "vs dedicated": "{:+.1%}",
+                    "Worst queue SL": "{:.1%}",
+                    "Extra generalists": "{:.0f}",
+                },
+                na_rep="-",
+            ),
+            hide_index=True,
+        )
+        st.caption(
+            "Cheapest staffing that meets 80/20 and at most 5% abandonment on every queue, "
+            f"{sr['days']} simulated days. Specialists answer first; a free agent takes the "
+            "longest-waiting call among its skills."
         )
 
 with tabs[2]:

@@ -3,9 +3,10 @@
 [![CI](https://github.com/orhansonmeztr/customer-care-analytics/actions/workflows/ci.yml/badge.svg)](https://github.com/orhansonmeztr/customer-care-analytics/actions/workflows/ci.yml)
 
 **Customer care analytics and capacity planning for an automotive distributor, end to end:**
-messy raw extracts → data quality → star schema and KPIs → call volume forecast → Erlang C
-staffing plan → customer segments → post-warranty churn with a cost-based call list →
-complaint early warning → dashboard.
+messy raw extracts → data quality → star schema and KPIs → call volume forecast with a
+calibrated P80 → Erlang A staffing, checked against a simulated center, across skill groups →
+customer segments → post-warranty churn with a cost-based call list → complaint early
+warning → dashboard, plus a text-to-SQL assistant that runs on our own GPU.
 
 The company, "Meridian Auto", is fictional and so is all the data. A generator produces
 2.5 years of CRM, vehicle, service, call-center, complaint and survey extracts for 150,000
@@ -31,14 +32,14 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | Advanced SQL | DuckDB: window functions, running max per vehicle, gap detection on a full calendar, entity resolution joins, KPI views ([`quality.py`](src/care_analytics/quality.py), [`warehouse.sql`](src/care_analytics/sql/warehouse.sql)) |
 | Data preparation, cleaning and quality | 29 rules in 6 quality dimensions + privacy, `*_status` columns instead of silent fixes ([report](#data-quality)) |
 | Data modelling and governance | Star schema with stated grain, one KPI definition per metric ([`docs/kpi_definitions.md`](docs/kpi_definitions.md)), personal data excluded from exports |
-| Forecasting | Rolling-origin backtest against three baselines, Turkish holiday calendar, quantile forecast |
-| Planning | Erlang C staffing per 30-minute interval, service level vs cost curve |
+| Forecasting | Rolling-origin backtest against three baselines, Turkish holiday calendar, quantile forecast with a conformal-calibrated P80 |
+| Planning | Erlang C and Erlang A (callers who hang up, patience estimated from the data) per 30-minute interval; both validated against a discrete-event simulation; dedicated vs cross-trained vs pooled skill groups ([`queue_sim.py`](src/care_analytics/queue_sim.py), [`skills_routing.py`](src/care_analytics/skills_routing.py)) |
 | Segmentation | RFM rules + k-means, profiled in business terms with an action per segment |
 | Classification | Out-of-time validation, leakage guard, calibration (Brier), lift, cost-based threshold, explanations |
-| Anomaly detection | Poisson baselines per car on the road, Benjamini-Hochberg false discovery control |
+| Anomaly detection | Poisson baselines per car on the road, Benjamini-Hochberg false discovery control; a daily Poisson CUSUM compared at equal false alarms |
 | Dashboards | Streamlit app; CSV extracts for Tableau / Power BI in `data/exports` |
-| AI decision support | Text-to-SQL assistant with a SQL guard, a golden set scored by execution accuracy and versioned prompts ([`assistant/`](src/care_analytics/assistant)) |
-| Engineering | CLI, tests on the injected truth, GitHub Actions, Docker |
+| AI decision support | Text-to-SQL assistant with a SQL guard, golden sets (core, hard, held-out) scored by execution accuracy over repeated runs, versioned prompts ([`assistant/`](src/care_analytics/assistant)) |
+| Engineering | CLI, tests on the injected truth, GitHub Actions, Docker; local LLM serving with vLLM on k3s ([`deploy/k8s`](deploy/k8s)) |
 
 ## Architecture
 
@@ -48,13 +49,14 @@ flowchart LR
     R --> Q[Data quality<br/>profile, rules, timezone & load detection,<br/>entity resolution, PII masking]
     Q --> S[(staging tables<br/>+ status columns)]
     S --> W[(star schema<br/>dims, facts, KPI views)]
-    W --> F[Forecast<br/>backtest + 28-day P50/P80]
-    F --> P[Erlang C<br/>staffing plan]
+    W --> F[Forecast<br/>backtest + 28-day P50/P80<br/>conformal calibration]
+    F --> P[Erlang A<br/>staffing plan]
+    P --> SIM[Simulated center<br/>validation + skill groups]
     W --> SEG[Segmentation<br/>RFM + k-means]
     W --> C[Service churn<br/>call list]
     W --> A[Complaint<br/>early warning]
-    W & P & SEG & C & A --> D[Dashboard<br/>+ CSV exports]
-    W --> AS[Analytics assistant<br/>LLM -> SQL guard -> read-only query]
+    W & P & SIM & SEG & C & A --> D[Dashboard<br/>+ CSV exports]
+    W --> AS[Analytics assistant<br/>local LLM on vLLM -> SQL guard -> read-only query]
     AS --> D
     G -. ground truth .-> T{{Scoring:<br/>tests and reports}}
 ```
