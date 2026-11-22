@@ -132,7 +132,7 @@ with tabs[0]:
         .mark_line()
         .encode(x=alt.X("call_date:T", title=None), y=alt.Y("offered:Q", title="Offered calls"))
         .properties(title="Daily offered calls", height=280),
-        use_container_width=True,
+        width="stretch",
     )
     base = alt.Chart(d).encode(x=alt.X("call_date:T", title=None))
     c2.altair_chart(
@@ -144,7 +144,7 @@ with tabs[0]:
             .mark_rule(strokeDash=[4, 4], color="gray")
             .encode(y="y:Q")
         ).properties(title="Service level (target 80%)", height=280),
-        use_container_width=True,
+        width="stretch",
     )
 
     hm = q(f"""
@@ -173,7 +173,7 @@ with tabs[0]:
             tooltip=["day", "hour", alt.Tooltip("service_level:Q", format=".1%"), "calls"],
         )
         .properties(title="Service level by weekday and hour", height=230),
-        use_container_width=True,
+        width="stretch",
     )
 
     reasons = q(f"""
@@ -200,7 +200,7 @@ with tabs[0]:
         .properties(
             title="Call reasons (colour: share that calls again within 7 days)", height=320
         ),
-        use_container_width=True,
+        width="stretch",
     )
 
 with tabs[1]:
@@ -238,17 +238,17 @@ with tabs[1]:
                 ),
             )
             .properties(height=320),
-            use_container_width=True,
+            width="stretch",
         )
 
-        st.subheader("Staffing plan (Erlang C, 80/20, 30-minute intervals)")
+        st.subheader("Staffing plan (80/20, 30-minute intervals; Erlang C P50 / P80, Erlang A P80)")
         plan = out("staffing_plan")
         days = sorted(plan["ds"].dt.date.unique())
         day = st.selectbox("Day", days, index=0)
         p = plan[plan["ds"].dt.date == day]
         pl = p.melt(
             id_vars="interval_start",
-            value_vars=["agents_p50", "agents_p80"],
+            value_vars=[c for c in ("agents_p50", "agents_p80", "agents_p80_erlang_a") if c in p],
             var_name="plan",
             value_name="agents",
         )
@@ -262,7 +262,7 @@ with tabs[1]:
                 color=alt.Color("plan:N", title=None),
             )
             .properties(height=300),
-            use_container_width=True,
+            width="stretch",
         )
         c2.metric("Agent hours on the phone (P50)", f"{p['agents_p50'].sum() / 2:,.0f}")
         c2.metric(
@@ -284,7 +284,7 @@ with tabs[1]:
                 ],
             )
             .properties(height=240),
-            use_container_width=True,
+            width="stretch",
         )
 
 with tabs[2]:
@@ -296,7 +296,7 @@ with tabs[2]:
         .mark_bar()
         .encode(x="customers:Q", y=alt.Y("segment:N", sort="-x", title=None))
         .properties(title="RFM segments", height=260),
-        use_container_width=True,
+        width="stretch",
     )
     prof = (
         seg.groupby("cluster_name")
@@ -331,7 +331,7 @@ with tabs[2]:
             color=alt.Color("rfm_segment:N", title="RFM segment"),
         )
         .properties(height=360),
-        use_container_width=True,
+        width="stretch",
     )
 
 with tabs[3]:
@@ -363,7 +363,7 @@ with tabs[3]:
             .properties(
                 title="Value of the retention call by targeting depth (test set)", height=300
             ),
-            use_container_width=True,
+            width="stretch",
         )
         drv = out("churn_drivers").reset_index().rename(columns={"index": "feature"})
         st.altair_chart(
@@ -374,7 +374,7 @@ with tabs[3]:
                 y=alt.Y("feature:N", sort="-x", title=None),
             )
             .properties(title="Risk drivers", height=300),
-            use_container_width=True,
+            width="stretch",
         )
         st.subheader("Warranty ending in 60-120 days, highest risk first")
         st.dataframe(out("churn_risk_upcoming").head(200), hide_index=True)
@@ -400,7 +400,7 @@ with tabs[4]:
             ),
         )
         + base.mark_line(color="black").encode(y="baseline:Q"),
-        use_container_width=True,
+        width="stretch",
     )
 
 with tabs[5]:
@@ -430,7 +430,7 @@ with tabs[5]:
                 ]
             ],
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
         load = q("SELECT * FROM dq_daily_load ORDER BY call_date")
         st.altair_chart(
@@ -444,7 +444,7 @@ with tabs[5]:
                 y="n_calls:Q",
                 tooltip=["call_date", "n_calls", "expected", "load_status"],
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
 with tabs[6]:
