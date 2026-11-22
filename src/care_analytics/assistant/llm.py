@@ -5,8 +5,6 @@ Providers:
 * ``vllm`` (default): the model served on the local GPU node (Qwen2.5-Coder-14B on vLLM,
   see deploy/k8s), reached through ``kubectl port-forward``. No data leaves the network.
   ``VLLM_BASE_URL`` (default ``http://localhost:18001/v1``), ``VLLM_MODEL``.
-* ``ollama``: a small local model through Ollama's native API, with "thinking" turned off;
-  a fallback when the GPU node is off. Much less accurate.
 * ``deepseek``: DeepSeek's OpenAI-compatible API, configured by ``DEEPSEEK_*`` variables.
   The most accurate option, but questions, schema and results leave the network.
 * ``openai``: any OpenAI-compatible endpoint (OpenAI, Azure OpenAI v1 endpoint ...).
@@ -24,7 +22,6 @@ import json
 import os
 import re
 import time
-import urllib.request
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -129,40 +126,6 @@ def deepseek_model() -> OpenAICompatible:
     )
 
 
-@dataclass
-class OllamaChat:
-    model: str = field(default_factory=lambda: os.environ.get("ASSISTANT_MODEL", "qwen3.5-32k:2b"))
-    base_url: str = field(
-        default_factory=lambda: os.environ.get("ASSISTANT_BASE_URL", "http://localhost:11434")
-    )
-    num_ctx: int = 8192
-    max_tokens: int = 512  # a query never needs more; stops a model that keeps going
-    timeout: float = 600.0
-
-    @property
-    def name(self) -> str:
-        return self.model
-
-    def chat(self, messages: list[dict]) -> Reply:
-        body = {
-            "model": self.model, "messages": messages, "stream": False, "think": False,
-            "options": {"temperature": 0, "num_ctx": self.num_ctx, "num_predict": self.max_tokens},
-        }  # fmt: skip
-        req = urllib.request.Request(
-            f"{self.base_url.rstrip('/')}/api/chat", data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
-        )  # fmt: skip
-        t0 = time.perf_counter()
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310 - configured URL
-            d = json.loads(r.read())
-        return Reply(
-            text=strip_reasoning(d["message"]["content"]),
-            prompt_tokens=d.get("prompt_eval_count", 0),
-            completion_tokens=d.get("eval_count", 0),
-            seconds=time.perf_counter() - t0,
-        )
-
-
 def vllm_model() -> OpenAICompatible:
     env = os.environ
     return OpenAICompatible(
@@ -173,7 +136,7 @@ def vllm_model() -> OpenAICompatible:
     )
 
 
-PROVIDERS = ("vllm", "ollama", "deepseek", "openai")
+PROVIDERS = ("vllm", "deepseek", "openai")
 
 
 def default_model(provider: str | None = None) -> ChatModel:
@@ -186,9 +149,7 @@ def default_model(provider: str | None = None) -> ChatModel:
         return vllm_model()
     if provider == "deepseek":
         return deepseek_model()
-    if provider == "openai":
-        return OpenAICompatible()
-    return OllamaChat()
+    return OpenAICompatible()
 
 
 @dataclass

@@ -84,7 +84,7 @@ pytest -q
 ```
 
 Ask the data. The default model runs on the local GPU node, so no data leaves the network;
-open a tunnel to it first. Without the GPU node, `--provider ollama` uses a small CPU model.
+open a tunnel to it first.
 For DeepSeek, copy `.env.example` to `.env`, add the key and pass `--provider deepseek`.
 
 ```bash
@@ -285,7 +285,7 @@ column names, extra columns and percentages are tolerated.
 | `Qwen/Qwen3-8B` (FP8, thinking off) | vLLM, RTX 5070 Ti, local k3s | no | 10 | 4 | 0.9 s | electricity |
 | `distil-labs/distil-qwen3-4b-text2sql` | vLLM, RTX 5070 Ti, local k3s | no | 10 | 4 | 0.9 s | electricity |
 | `Qwen2.5-1.5B-Instruct` | vLLM, RTX 5070 Ti, local k3s | no | 5¹ | 4 | 0.5 s | electricity |
-| `qwen3.5-32k:2b` | Ollama, CPU | no | 3¹ | 4 | 110 s | electricity |
+| `qwen3.5-32k:2b` | Ollama, CPU (provider since removed) | no | 3¹ | 4 | 110 s | electricity |
 
 Prompt 1.1 except the CPU run (1.0) and flash. ³ `deepseek-flash` with prompt 1.2: three
 runs, 19/20 and 4/4 every time; the question it misses changes between runs
@@ -381,7 +381,7 @@ What the run shows:
 | Situation | Provider | Why |
 |---|---|---|
 | Real customer data (default) | `vllm`: Qwen2.5-Coder-14B on the local GPU node | Questions, schema and results stay in the network. 16/20 on the core set; misses some KPI definitions. |
-| GPU node off | `ollama`: small model on CPU | Keeps data local, but 3/20: a fallback for trying the tool, not for answers. |
+| GPU node off | none for real customer data | The local assistant is unavailable; the rest of the pipeline and the dashboard work without it. Do not fall back to an API with real data. |
 | Synthetic or approved data, best accuracy | `deepseek` (`deepseek-flash`) | 19/20 on the core set in every run, 11-12/13 on the hard set, about 2 s per question, under a cent per evaluation. Data goes to a provider abroad: for real customer data this is a cross-border transfer under KVKK and needs legal approval first. |
 
 `deepseek-v4-pro` was not more accurate than flash where it mattered (the hard set) and is

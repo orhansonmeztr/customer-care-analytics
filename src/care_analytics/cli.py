@@ -59,7 +59,7 @@ def _assistant(argv: list[str]) -> None:
         p.add_argument(
             "--provider",
             default=None,
-            choices=["vllm", "ollama", "deepseek", "openai"],
+            choices=["vllm", "deepseek", "openai"],
             help="default: $ASSISTANT_PROVIDER or vllm (local GPU node)",
         )
     args = ap.parse_args(argv)
