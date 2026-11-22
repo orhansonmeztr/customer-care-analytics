@@ -109,11 +109,21 @@ def test_downstream_steps_run(paths):
     assert 0 < ch["churn_rate_train"] < 1
     an = run_anomaly(paths)
     assert an["series"] > 0
+    from care_analytics.staffing_validation import run_staffing_validation
+
+    sv = run_staffing_validation(paths, days=7)
+    assert sv["accuracy"]["intervals"] > 0
+    # Erlang A predicts the simulated service level better than Erlang C
+    assert (
+        sv["accuracy"]["service_level"]["erlang_a"]["mae"]
+        < sv["accuracy"]["service_level"]["erlang_c"]["mae"]
+    )
     for f in (
         "data_quality.md",
         "forecast_staffing.md",
         "segmentation.md",
         "churn.md",
         "complaint_alerts.md",
+        "staffing_validation.md",
     ):
         assert (paths.reports / f).exists()

@@ -234,3 +234,34 @@ def test_weekday_factors_follow_the_weekly_pattern():
     f = weekday_factors(d).dropna()
     mondays = f[f.index.day_of_week == 0]
     assert mondays.mean() == pytest.approx(4 / (4 + 6 * 2) * 7, rel=0.05)
+
+
+# ---------------------------------------------------------------------------- simulator
+def test_simulator_matches_erlang_a_when_its_assumptions_hold():
+    from care_analytics.queue_sim import CenterConfig, interval_stats, simulate_day
+    from care_analytics.staffing import erlang_a
+
+    cfg = CenterConfig(handle_log_mean=np.log(240), handle_log_sd=0, patience_sec=60,
+                       patience_grace_sec=0, absenteeism_mean=0, absenteeism_sd=0,
+                       day_noise_sd=0, exponential_handle=True, stationary=True)  # fmt: skip
+    rng = np.random.default_rng(5)
+    n_int, calls, agents = 24, 100.0, 13
+    days = [simulate_day(rng, cfg, np.full(n_int, calls), np.full(n_int, agents),
+                         day_start=d * 86400.0).assign(day=d) for d in range(40)]  # fmt: skip
+    st = interval_stats(pd.concat(days))
+    st = st[st["interval"] > 0]  # the first interval starts with an empty queue
+    sl = st["in_target"].sum() / st["offered"].sum()
+    ab = (st["abandoned"] + st["short"]).sum() / st["offered"].sum()
+    r = erlang_a(calls, 240, 60, agents)
+    assert sl == pytest.approx(r["service_level"], abs=0.02)
+    assert ab == pytest.approx(r["p_abandon"], abs=0.01)
+
+
+def test_staffing_changes_between_intervals():
+    from care_analytics.queue_sim import CenterConfig, simulate_day
+
+    cfg = CenterConfig(np.log(200), 0.3, 120, absenteeism_mean=0, absenteeism_sd=0, day_noise_sd=0)
+    calls = simulate_day(np.random.default_rng(1), cfg, np.array([60.0, 60.0, 60.0]),
+                         np.array([8, 0, 8]))  # fmt: skip
+    assert not calls.loc[calls["interval"] == 1, "answered"].any()  # nobody logged in
+    assert calls.loc[calls["interval"] == 2, "answered"].mean() > 0.5
