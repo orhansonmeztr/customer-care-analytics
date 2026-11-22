@@ -161,3 +161,13 @@ def test_reasoning_replies_use_the_final_sql():
     assert extract_sql(strip_reasoning(reply)) == "SELECT 2"
     assert strip_reasoning("draft ... </think> ```sql\nSELECT 3\n```").startswith("```sql")
     assert extract_sql("```sql\nSELECT 1\n```\nfixed:\n```sql\nSELECT 4\n```") == "SELECT 4"
+
+
+def test_hard_set_with_perfect_model(paths):
+    golden = load_golden("hard")
+    replies = {
+        g["question"]: [f"```sql\n{g['sql']}\n```" if "sql" in g else "REFUSE: not allowed"]
+        for g in golden
+    }
+    s = evaluate(paths, ScriptedModel(replies, name="perfect"), set_name="hard")
+    assert s["golden_set"] == "hard" and s["passed"] == s["questions"] == len(golden)

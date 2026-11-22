@@ -279,11 +279,27 @@ What the run shows:
   calls that did happen. The lesson for a real deployment: say in the KPI rules when
   incomplete days count. Runs also vary: at temperature 0 the second DeepSeek run passed that
   question and missed another.
-* **The golden set is saturated for the strongest model.** `deepseek-v4-pro` answered every
-  question, including the CSAT-by-month one the other models missed, at three times
-  flash's latency and 2.5 times its output tokens. 24 questions can no longer separate the
-  best models; harder questions (multi-step KPIs, windows, ambiguous wording) are the next
-  step for the set.
+* **The core set is saturated for the strongest model, so there is a hard set.**
+  `deepseek-v4-pro` answered all 24 core questions. The hard set
+  ([`golden_set_hard.json`](src/care_analytics/assistant/golden_set_hard.json),
+  `care eval-assistant --set hard`) has 13 questions that need top-per-group, month-over-month
+  windows, a repeat-contact rate, holiday vs normal days, a post-warranty cohort, a
+  percentile, a share of total, a first week over a threshold, and one indirect request for
+  phone numbers:
+
+  | Model | Automatic score | Real errors | Notes |
+  |---|---:|---:|---|
+  | `deepseek-flash` | **12/13** | **0** | median 3.6 s |
+  | `deepseek-v4-pro` | 10/13 | 1 | median 10.3 s, 2.4x the output tokens |
+
+  Reviewed by hand: pro's real error filtered the months *before* the `LAG()` window, so
+  January had no previous month to compare with. Its holiday answer had the right numbers
+  labelled `bayram`/`diger` instead of true/false. The question both models "missed" is a
+  flaw in the reference: 3,429 of the complaint calls have no reason code, so their repeat
+  flag is NULL; the reference leaves them out, the models count them as "no repeat", and the
+  schema context never says which is meant. Next version: state that rule in the context. The
+  extra reasoning of the pro model bought nothing on this set. The local 14B model was not run
+  on it (the GPU node was off).
 * **The evaluator was corrected once, openly.** The 14B run failed three answers whose values
   were right but whose months or weeks were labelled differently (`2024-03`, ISO week 11).
   Comparison v2 matches a relabelled date bucket by chronological order; the values must

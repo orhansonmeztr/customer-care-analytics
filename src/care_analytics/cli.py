@@ -52,6 +52,7 @@ def _assistant(argv: list[str]) -> None:
     ask.add_argument("--explain", action="store_true", help="also write a short answer")
     ev = sub.add_parser("eval-assistant", help="run the golden-set evaluation")
     ev.add_argument("--ids", nargs="*", help="only these question ids")
+    ev.add_argument("--set", dest="set_name", default="core", choices=["core", "hard"])
     for p in (ask, ev):
         p.add_argument("--data-dir", default=None)
         p.add_argument("--model", default=None, help="model name (default: $ASSISTANT_MODEL)")
@@ -72,7 +73,7 @@ def _assistant(argv: list[str]) -> None:
     if args.cmd == "eval-assistant":
         from .assistant.evaluate import evaluate
 
-        print(json.dumps(evaluate(paths, model, ids=args.ids), indent=2))
+        print(json.dumps(evaluate(paths, model, ids=args.ids, set_name=args.set_name), indent=2))
         return
     from .assistant.agent import Assistant
     from .assistant.guard import connect_read_only

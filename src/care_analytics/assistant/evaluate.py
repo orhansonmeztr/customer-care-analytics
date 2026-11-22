@@ -29,10 +29,14 @@ from .context import PROMPT_VERSION
 from .guard import connect_read_only, run_query
 from .llm import ChatModel
 
+GOLDEN_SETS = {"core": "golden_set.json", "hard": "golden_set_hard.json"}
 
-def load_golden() -> list[dict]:
-    text = resources.files("care_analytics.assistant").joinpath("golden_set.json").read_text()
-    return json.loads(text)
+
+def load_golden(set_name: str = "core") -> list[dict]:
+    """``core``: 24 everyday questions. ``hard``: 13 questions that need windows, cohorts,
+    top-per-group, percentiles or a careful KPI definition."""
+    files = resources.files("care_analytics.assistant")
+    return json.loads(files.joinpath(GOLDEN_SETS[set_name]).read_text())
 
 
 def _norm(v, scale: float = 1.0):
@@ -102,11 +106,13 @@ def _match(ref: pd.DataFrame, got: pd.DataFrame) -> bool:
     return False
 
 
-def evaluate(paths: Paths, model: ChatModel, ids: list[str] | None = None) -> dict:
+def evaluate(
+    paths: Paths, model: ChatModel, ids: list[str] | None = None, set_name: str = "core"
+) -> dict:
     con = connect_read_only(str(paths.warehouse))
     assistant = Assistant(con, model)
     rows = []
-    for item in load_golden():
+    for item in load_golden(set_name):
         if ids and item["id"] not in ids:
             continue
         try:
@@ -131,6 +137,7 @@ def evaluate(paths: Paths, model: ChatModel, ids: list[str] | None = None) -> di
     by_cat = df.groupby("category")["passed"].agg(["sum", "count"])
     summary = {
         "model": model.name,
+        "golden_set": set_name,
         "prompt_version": PROMPT_VERSION,
         "comparison_version": COMPARISON_VERSION,
         "questions": len(df),
@@ -147,7 +154,9 @@ def evaluate(paths: Paths, model: ChatModel, ids: list[str] | None = None) -> di
         "total_cached_prompt_tokens": int(df["cached_prompt_tokens"].sum()),
         "total_completion_tokens": int(df["completion_tokens"].sum()),
     }  # fmt: skip
-    slug = model.name.replace("/", "_").replace(":", "_")
+    slug = model.name.replace("/", "_").replace(":", "_") + (
+        "" if set_name == "core" else f"_{set_name}"
+    )
     df.to_csv(paths.outputs / f"assistant_eval_{slug}.csv", index=False)
     (paths.outputs / f"assistant_eval_{slug}.json").write_text(json.dumps(summary, indent=2))
     _report(paths, summary, df, slug)
@@ -156,7 +165,8 @@ def evaluate(paths: Paths, model: ChatModel, ids: list[str] | None = None) -> di
 
 def _report(paths: Paths, s: dict, df: pd.DataFrame, slug: str) -> None:
     lines = [
-        f"# Analytics assistant evaluation: `{s['model']}`, prompt {s['prompt_version']}, "
+        f"# Analytics assistant evaluation: `{s['model']}`, {s['golden_set']} set, "
+        f"prompt {s['prompt_version']}, "
         f"comparison v{s['comparison_version']}", "",
         f"{s['questions']} questions (Turkish and English). Execution accuracy: "
         f"**{s['passed']}/{s['questions']}**; answerable questions {s['answerable_accuracy']:.0%}; "
