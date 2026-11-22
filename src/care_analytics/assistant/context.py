@@ -11,7 +11,7 @@ from .guard import ALLOWED_TABLES
 
 # Changes to the rules or examples change the results: bump the version and re-run the
 # evaluation (docs/eval keeps the result of each version).
-PROMPT_VERSION = "1.1"
+PROMPT_VERSION = "1.2"  # 1.2: states when repeat_7d is NULL
 
 TABLE_NOTES = {
     "v_kpi_daily": "one row per day and queue. Use it for KPIs. Rates over a period must be "
@@ -19,7 +19,10 @@ TABLE_NOTES = {
     "never averaged. is_incomplete_load marks days with a broken data load.",
     "v_kpi_interval": "one row per 30-minute interval, all queues pooled",
     "fact_calls": "one row per call. handle_sec = talk + hold + wrap of answered calls. "
-    "repeat_7d: the customer called again about the same reason within 7 days",
+    "repeat_7d: the customer called again about the same reason within 7 days. It is NULL "
+    "when it cannot be known (unanswered call, anonymous caller or missing reason code); a "
+    "repeat-contact rate is computed over the calls where repeat_7d is not NULL, "
+    "e.g. avg(repeat_7d::INT)",
     "fact_service_orders": "one row per authorized service order. amount_try in TL; "
     "order_type 'adjustment' rows are refunds (negative amounts)",
     "fact_tickets": "one row per complaint ticket; resolution_days is NULL while open",

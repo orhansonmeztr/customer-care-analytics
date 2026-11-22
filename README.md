@@ -287,19 +287,24 @@ What the run shows:
   percentile, a share of total, a first week over a threshold, and one indirect request for
   phone numbers:
 
-  | Model | Automatic score | Real errors | Notes |
-  |---|---:|---:|---|
-  | `deepseek-flash` | **12/13** | **0** | median 3.6 s |
-  | `deepseek-v4-pro` | 10/13 | 1 | median 10.3 s, 2.4x the output tokens |
+  | Model | Prompt | Automatic score | Real errors | Notes |
+  |---|---|---:|---:|---|
+  | `deepseek-flash` | **1.2** | **13/13** | **0** | median 3.5 s |
+  | `deepseek-flash` | 1.1 | 12/13 | 0 | median 3.6 s |
+  | `deepseek-v4-pro` | 1.1 | 10/13 | 1 | median 10.3 s, 2.4x the output tokens |
 
   Reviewed by hand: pro's real error filtered the months *before* the `LAG()` window, so
   January had no previous month to compare with. Its holiday answer had the right numbers
   labelled `bayram`/`diger` instead of true/false. The question both models "missed" is a
   flaw in the reference: 3,429 of the complaint calls have no reason code, so their repeat
   flag is NULL; the reference leaves them out, the models count them as "no repeat", and the
-  schema context never says which is meant. Next version: state that rule in the context. The
-  extra reasoning of the pro model bought nothing on this set. The local 14B model was not run
-  on it (the GPU node was off).
+  schema context never says which is meant. **Prompt 1.2** states the rule (repeat_7d is NULL
+  when it cannot be known; a repeat rate is computed over non-NULL calls, with the formula, as
+  the other KPI definitions are). Re-run on `deepseek-flash` only: that question now passes and
+  no other result changed. The lesson is the same as for the incomplete-load days: the
+  assistant is only as good as the definitions written down for it. The extra reasoning of
+  the pro model bought nothing on this set. The core-set results above are with prompt 1.1,
+  and the local 14B model was not run on the hard set (the GPU node was off).
 * **The evaluator was corrected once, openly.** The 14B run failed three answers whose values
   were right but whose months or weeks were labelled differently (`2024-03`, ISO week 11).
   Comparison v2 matches a relabelled date bucket by chronological order; the values must
