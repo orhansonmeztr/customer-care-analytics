@@ -107,3 +107,82 @@ def test_detect_flags_a_spike_but_not_noise():
     alerts = res[res["alert"]]
     assert (alerts["model"] == "M0").any() and alerts["week"].min() == weeks[30]
     assert (alerts["model"] != "M0").sum() <= 1
+
+
+# ---------------------------------------------------------------------------- Erlang A
+def _simulate_mmn_m(lam, mu, gamma, n_agents, t_target, n_calls=60_000, seed=0):
+    """Discrete-event simulation of M/M/N+M (FCFS, exponential patience)."""
+    import heapq
+
+    rng = np.random.default_rng(seed)
+    free_at = [0.0] * n_agents  # time each agent becomes free
+    heapq.heapify(free_at)
+    answered_fast = abandoned = 0
+    arrivals = np.cumsum(rng.exponential(1 / lam, n_calls))
+    patience = rng.exponential(1 / gamma, n_calls)
+    service = rng.exponential(1 / mu, n_calls)
+    for i, t in enumerate(arrivals):
+        # an FCFS queue with abandonment: the caller is answered when an agent frees up before
+        # the caller's deadline; callers ahead who left do not hold anyone up
+        start = max(t, free_at[0])
+        if start - t <= patience[i]:
+            heapq.heapreplace(free_at, start + service[i])
+            answered_fast += start - t <= t_target
+        else:
+            abandoned += 1
+    return answered_fast / n_calls, abandoned / n_calls
+
+
+def test_erlang_a_equals_erlang_c_with_infinite_patience():
+    from care_analytics.staffing import erlang_a
+
+    for n in (42, 46, 50):
+        assert erlang_a(300, 240, 1e12, n)["service_level"] == pytest.approx(
+            service_level(40, n, 240, 20), abs=1e-6
+        )
+
+
+def test_erlang_a_matches_a_simulation():
+    from care_analytics.staffing import erlang_a
+
+    calls, aht, patience, agents = 90, 240, 60, 11  # an overloaded interval: 12 Erlangs
+    sl_sim, ab_sim = _simulate_mmn_m(calls / 1800, 1 / aht, 1 / patience, agents, 20)
+    r = erlang_a(calls, aht, patience, agents)
+    assert r["service_level"] == pytest.approx(sl_sim, abs=0.02)
+    assert r["p_abandon"] == pytest.approx(ab_sim, abs=0.01)
+
+
+def test_impatient_callers_need_fewer_agents_but_respect_the_abandon_limit():
+    from care_analytics.staffing import required_agents_erlang_a
+
+    c = required_agents(152, 300)["agents"]
+    a = required_agents_erlang_a(152, 300, 115, start=c)
+    assert a["agents"] <= c
+    assert a["service_level"] >= 0.80 and a["p_abandon"] <= 0.05
+    loose = required_agents_erlang_a(152, 300, 115, start=c, max_abandon=1.0)
+    assert loose["agents"] <= a["agents"]
+
+
+# ---------------------------------------------------------------------------- conformal
+def test_conformal_offset_reaches_the_target_coverage():
+    from care_analytics.forecast import conformal_offset
+
+    rng = np.random.default_rng(3)
+    y = rng.lognormal(7, 0.2, 500)
+    p80 = y.mean() * np.ones(500)  # a badly calibrated constant forecast
+    shift = conformal_offset(y, p80)
+    assert np.mean(y <= p80 * np.exp(shift)) == pytest.approx(0.80, abs=0.01)
+
+
+def test_calibration_uses_only_earlier_folds():
+    from care_analytics.forecast import calibrate_backtest
+
+    rows = []
+    for k, cut in enumerate(pd.date_range("2024-01-01", periods=5, freq="MS")):
+        # later folds have huge errors: they must not influence earlier calibrations
+        actual = 100.0 * (10 if k == 4 else 1)
+        rows += [{"cutoff": cut, "y": actual * (1 + 0.01 * i), "lgbm_p80": 100.0, "lgbm": 90.0}
+                 for i in range(20)]  # fmt: skip
+    bt = calibrate_backtest(pd.DataFrame(rows), min_folds=2)
+    assert bt.groupby("cutoff")["lgbm_p80_cal"].apply(lambda s: s.isna().all()).iloc[:2].all()
+    assert bt.loc[bt["cutoff"] == bt["cutoff"].max(), "lgbm_p80_cal"].max() < 200

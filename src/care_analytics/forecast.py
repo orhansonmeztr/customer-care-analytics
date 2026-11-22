@@ -11,6 +11,9 @@ Design choices
 * Days the data quality step marked as incomplete loads are excluded from training and
   scoring. Treating a missing load as "zero calls" would teach the model a fake drop.
 * The 80th percentile forecast (quantile LightGBM) is what the staffing plan uses for risk.
+  Quantile models trained in-sample under-cover out of time, so the P80 is calibrated with
+  split conformal prediction on the backtest's own out-of-time errors: each fold is
+  corrected only with errors from earlier folds, the future forecast with all of them.
 """
 
 from __future__ import annotations
@@ -26,10 +29,12 @@ from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from .calendar_tr import holiday_calendar
 from .paths import Paths
 from .quality import connect
-from .staffing import service_level_curve, staffing_plan
+from .staffing import erlang_a, estimate_patience, service_level_curve, staffing_plan
 
 MIN_LAG = 35
 HORIZON_DAYS = 28
+TARGET_COVERAGE = 0.80
+CONFORMAL_MIN_FOLDS = 3  # folds of past errors needed before a fold is calibrated
 
 
 def load_daily(con) -> pd.DataFrame:
@@ -164,6 +169,36 @@ def backtest(daily: pd.DataFrame, n_folds: int = 12) -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True)
 
 
+def conformal_offset(y: np.ndarray, p80: np.ndarray, level: float = TARGET_COVERAGE) -> float:
+    """Log-scale shift that makes ``p80 * exp(shift)`` cover ``level`` of the given errors.
+
+    Split conformal: the score is log(actual / P80); its finite-sample corrected quantile is
+    the shift. A positive shift widens the band, a negative one narrows it.
+    """
+    m = ~np.isnan(y) & ~np.isnan(p80) & (y > 0) & (p80 > 0)
+    s = np.sort(np.log(y[m] / p80[m]))
+    n = len(s)
+    if n == 0:
+        return 0.0
+    k = min(n, int(np.ceil((n + 1) * level)))
+    return float(s[k - 1])
+
+
+def calibrate_backtest(bt: pd.DataFrame, min_folds: int = CONFORMAL_MIN_FOLDS) -> pd.DataFrame:
+    """Add ``lgbm_p80_cal``: each fold corrected with the errors of earlier folds only."""
+    bt = bt.copy()
+    bt["lgbm_p80_cal"] = np.nan
+    cutoffs = sorted(bt["cutoff"].unique())
+    for i, c in enumerate(cutoffs):
+        if i < min_folds:
+            continue
+        past = bt[bt["cutoff"] < c]
+        shift = conformal_offset(past["y"].to_numpy(float), past["lgbm_p80"].to_numpy(float))
+        cur = bt["cutoff"] == c
+        bt.loc[cur, "lgbm_p80_cal"] = bt.loc[cur, "lgbm_p80"] * np.exp(shift)
+    return bt
+
+
 def score(bt: pd.DataFrame) -> pd.DataFrame:
     y = bt["y"].to_numpy(dtype=float)
     special = (bt["is_holiday"] | bt["is_arife"] | bt["is_post_holiday"]).astype(bool).to_numpy()
@@ -182,6 +217,17 @@ def score(bt: pd.DataFrame) -> pd.DataFrame:
     res = pd.DataFrame(out)
     m = ~np.isnan(y)
     res.attrs["p80_coverage"] = float((y[m] <= bt["lgbm_p80"].to_numpy()[m]).mean())
+    if "lgbm_p80_cal" in bt and bt["lgbm_p80_cal"].notna().any():
+        # compare raw and calibrated on the same folds: the ones that could be calibrated
+        cal = bt["lgbm_p80_cal"].to_numpy(float)
+        e = m & ~np.isnan(cal)
+        raw = bt["lgbm_p80"].to_numpy(float)
+        p50 = bt["lgbm"].to_numpy(float)
+        res.attrs["calibrated_folds"] = int(bt.loc[e, "cutoff"].nunique())
+        res.attrs["p80_coverage_raw_same_folds"] = float((y[e] <= raw[e]).mean())
+        res.attrs["p80_coverage_calibrated"] = float((y[e] <= cal[e]).mean())
+        res.attrs["p80_margin_raw"] = float(np.mean(raw[e] / p50[e] - 1))
+        res.attrs["p80_margin_calibrated"] = float(np.mean(cal[e] / p50[e] - 1))
     return res
 
 
@@ -202,15 +248,18 @@ def intraday_profile(con, weeks: int = 8) -> pd.DataFrame:
     """).df()
 
 
-def future_forecast(daily: pd.DataFrame, days: int = HORIZON_DAYS) -> pd.DataFrame:
+def future_forecast(
+    daily: pd.DataFrame, days: int = HORIZON_DAYS, p80_shift: float = 0.0
+) -> pd.DataFrame:
     last = daily["ds"].max()
     future = pd.DataFrame(
         {"ds": pd.date_range(last + pd.Timedelta(days=1), periods=days), "y": np.nan}
     )
     feats = make_features(pd.concat([daily, future], ignore_index=True))
     train, test = feats[feats["ds"] <= last], feats[feats["ds"] > last].copy()
-    test["calls_p50"], test["calls_p80"] = _fit_predict_lgbm(train, test)
-    return test[["ds", "dow", "holiday_name", "calls_p50", "calls_p80"]]
+    test["calls_p50"], test["calls_p80_raw"] = _fit_predict_lgbm(train, test)
+    test["calls_p80"] = np.maximum(test["calls_p80_raw"] * np.exp(p80_shift), test["calls_p50"])
+    return test[["ds", "dow", "holiday_name", "calls_p50", "calls_p80_raw", "calls_p80"]]
 
 
 def run_forecast(
@@ -218,10 +267,12 @@ def run_forecast(
 ) -> dict:
     con = connect(paths)
     daily = load_daily(con)
-    bt = backtest(daily, n_folds=n_folds)
+    bt = calibrate_backtest(backtest(daily, n_folds=n_folds))
     sc = score(bt)
-    fut = future_forecast(daily)
+    shift = conformal_offset(bt["y"].to_numpy(float), bt["lgbm_p80"].to_numpy(float))
+    fut = future_forecast(daily, p80_shift=shift)
     prof = intraday_profile(con)
+    patience = estimate_patience(con)
     con.close()
 
     iv = fut.merge(prof, on="dow", how="left")
@@ -233,6 +284,7 @@ def run_forecast(
             subset=["aht_sec"]
         ),
         shrinkage=shrinkage,
+        patience=patience["patience_sec"],
         target_sl=target_sl,
     )
     bt.to_parquet(paths.outputs / "forecast_backtest.parquet", index=False)
@@ -242,6 +294,16 @@ def run_forecast(
 
     peak = plan.loc[plan["calls_p50"].idxmax()]
     curve = service_level_curve(peak["calls_p50"], peak["aht_sec"])
+    curve["service_level_erlang_a"] = [
+        erlang_a(peak["calls_p50"], peak["aht_sec"], patience["patience_sec"], int(n))[
+            "service_level"
+        ]
+        for n in curve["agents"]
+    ]
+    curve["abandon_erlang_a"] = [
+        erlang_a(peak["calls_p50"], peak["aht_sec"], patience["patience_sec"], int(n))["p_abandon"]
+        for n in curve["agents"]
+    ]
     curve.to_parquet(paths.outputs / "sl_curve.parquet", index=False)
 
     best = sc.sort_values("wape").iloc[0]
@@ -250,6 +312,15 @@ def run_forecast(
         "scores": sc.round(4).to_dict(orient="records"),
         "best_model": best["model"],
         "p80_coverage": round(sc.attrs["p80_coverage"], 3),
+        "conformal": {
+            "calibrated_folds": sc.attrs.get("calibrated_folds"),
+            "coverage_raw_same_folds": round(sc.attrs.get("p80_coverage_raw_same_folds", 0), 3),
+            "coverage_calibrated": round(sc.attrs.get("p80_coverage_calibrated", 0), 3),
+            "margin_over_p50_raw": round(sc.attrs.get("p80_margin_raw", 0), 3),
+            "margin_over_p50_calibrated": round(sc.attrs.get("p80_margin_calibrated", 0), 3),
+            "future_log_shift": round(shift, 4),
+        },
+        "patience": patience,
         "plan_days": int(fut["ds"].nunique()),
         "peak_interval": str(peak["interval_start"]),
         "peak_calls_p50": round(float(peak["calls_p50"]), 1),
@@ -257,6 +328,11 @@ def run_forecast(
         "peak_agents_p80": int(peak["agents_p80"]),
         "agent_hours_p50": float(plan["agents_p50"].sum() / 2),
         "agent_hours_p80": float(plan["agents_p80"].sum() / 2),
+        "peak_agents_p80_erlang_a": int(peak["agents_p80_erlang_a"]),
+        "agent_hours_p80_erlang_a": float(plan["agents_p80_erlang_a"].sum() / 2),
+        "erlang_c_plan_true_sl_mean": round(float(plan["sl_p80_erlang_c_plan_true"].mean()), 4),
+        "erlang_a_plan_sl_mean": round(float(plan["sl_p80_erlang_a"].mean()), 4),
+        "erlang_a_plan_abandon_mean": round(float(plan["abandon_p80_erlang_a"].mean()), 4),
     }
     _write_report(paths, summary, sc, curve)
     (paths.outputs / "forecast.json").write_text(json.dumps(summary, indent=2, default=str))
@@ -289,6 +365,25 @@ def _write_report(paths: Paths, s: dict, sc: pd.DataFrame, curve: pd.DataFrame) 
         f"The LightGBM 80th percentile forecast covered {s['p80_coverage']:.0%} of actual days "
         "(target: 80%).",
         "",
+        "### Conformal calibration of the P80",
+        "",
+        f"Each fold's P80 is corrected with the out-of-time errors of the earlier folds only "
+        f"(split conformal on log(actual / P80)); folds with fewer than {CONFORMAL_MIN_FOLDS} "
+        f"earlier folds are left out. On the {s['conformal']['calibrated_folds'] or 0} folds that "
+        "could be calibrated:",
+        "",
+        "| P80 | Coverage (target 80%) | Average margin over P50 |",
+        "|---|---:|---:|",
+        f"| Quantile LightGBM, raw | {s['conformal']['coverage_raw_same_folds']:.1%} | "
+        f"{s['conformal']['margin_over_p50_raw']:+.1%} |",
+        f"| Conformal-calibrated | {s['conformal']['coverage_calibrated']:.1%} | "
+        f"{s['conformal']['margin_over_p50_calibrated']:+.1%} |",
+        "",
+        f"The staffing plan uses the P80 calibrated with all backtest errors (log shift "
+        f"{s['conformal']['future_log_shift']:+.3f}). Conformal coverage is guaranteed only when "
+        "errors are exchangeable over time; call volumes drift, so the calibrated band can land "
+        "a few points off the target on later folds.",
+        "",
         "Holiday-related days are public holidays, the eve of a religious holiday and the first "
         "working day after one. Unplanned events such as the brake recall are not in the "
         "features, so every model misses them; that is what intraday monitoring is for.",
@@ -296,7 +391,26 @@ def _write_report(paths: Paths, s: dict, sc: pd.DataFrame, curve: pd.DataFrame) 
         "## Staffing plan",
         "",
         f"Next {s['plan_days']} days, 30-minute intervals, target 80% of calls answered within "
-        "20 seconds, maximum occupancy 90%, Erlang C.",
+        "20 seconds, maximum occupancy 90%.",
+        "",
+        "### Erlang C vs Erlang A",
+        "",
+        f"Caller patience estimated from the last {s['patience']['weeks']} weeks: "
+        f"**{s['patience']['patience_sec']:.0f} s** on average ({s['patience']['abandons']:,} "
+        f"abandonments after the first {s['patience']['grace_sec']:.0f} s, in "
+        f"{s['patience']['calls']:,} calls). Erlang A also caps abandonment at 5%.",
+        "",
+        "| Model, P80 plan | Agent hours on the phone | Peak agents | Mean service level | "
+        "Mean abandonment |",
+        "|---|---:|---:|---:|---:|",
+        f"| Erlang C | {s['agent_hours_p80']:,.0f} | {s['peak_agents_p80']} | "
+        f"{s['erlang_c_plan_true_sl_mean']:.1%} (with abandonment) | - |",
+        f"| Erlang A | {s['agent_hours_p80_erlang_a']:,.0f} | {s['peak_agents_p80_erlang_a']} | "
+        f"{s['erlang_a_plan_sl_mean']:.1%} | {s['erlang_a_plan_abandon_mean']:.1%} |",
+        "",
+        "Erlang C assumes nobody hangs up, so it plans for a longer queue than will form: the "
+        "Erlang C plan delivers a higher service level than the target once real abandonment "
+        "is accounted for. Erlang A meets the same target with fewer agent hours.",
         "",
         f"- Peak interval: {s['peak_interval']} with {s['peak_calls_p50']:.0f} expected calls: "
         f"**{s['peak_agents_p50']} agents** on the phone at P50, **{s['peak_agents_p80']}** at P80.",
@@ -305,12 +419,14 @@ def _write_report(paths: Paths, s: dict, sc: pd.DataFrame, curve: pd.DataFrame) 
         "",
         "### Service level at the peak interval",
         "",
-        "| Agents | Service level | ASA (s) | Occupancy |",
-        "|---:|---:|---:|---:|",
+        "| Agents | Service level, Erlang C | Service level, Erlang A | Abandonment, Erlang A | "
+        "ASA, Erlang C (s) | Offered load per agent |",
+        "|---:|---:|---:|---:|---:|---:|",
     ]
     for r in curve.head(12).itertuples():
         lines.append(
-            f"| {r.agents} | {r.service_level:.1%} | {r.asa_sec:.0f} | {r.occupancy:.0%} |"
+            f"| {r.agents} | {r.service_level:.1%} | {r.service_level_erlang_a:.1%} | "
+            f"{r.abandon_erlang_a:.1%} | {r.asa_sec:.0f} | {r.occupancy:.0%} |"
         )
     lines += [
         "",

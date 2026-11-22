@@ -18,7 +18,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 |---|---|
 | **Can we trust the data?** | Not as delivered. The pipeline found and fixed a 3-hour timezone error in the old PBX, one missing and one 40%-loaded day, 4,400 replayed call records, 4,400 duplicate customers (precision 100%, recall 98.3% against the injected truth) and phone numbers typed into complaint texts (masked for KVKK). |
 | **How many calls next month?** | LightGBM forecasts the whole month on its first day with **9.7% WAPE**, against 15.5% for the best simple baseline. The gap is widest on holidays (22% vs 91–102%), because religious holidays move every year and "same day last year" breaks. |
-| **How many agents?** | 32 agents on the phone at the busiest half hour reach 83% within 20 s; 33 give 88%. The plan covers 28 days in 30-minute intervals at P50 and P80, with 30% shrinkage. |
+| **How many agents?** | Planned on a conformal-calibrated P80 forecast with **Erlang A**, which models callers who hang up (patience estimated from the data: 115 s). It needs **4.4% fewer agent hours** than Erlang C for the same 80/20 target, with abandonment capped at 5%; the Erlang C plan would over-deliver at 92%. 28 days in 30-minute intervals, 30% shrinkage. |
 | **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
 | **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. |
 | **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network) answers 16 of 20 golden-set questions correctly in 0.9 s, with no data leaving the network; through the DeepSeek API, `deepseek-flash` answers 19 of 20 in each of three runs and `deepseek-v4-pro` 20. The local model is the default; DeepSeek is used only when chosen explicitly, because data then leaves the network (see [recommended configuration](#recommended-configuration)). See [Analytics assistant](#analytics-assistant). |
@@ -145,20 +145,47 @@ so every input is at least 35 days old.
 | **LightGBM** (ratio-to-level target, holiday calendar) | **9.7%** | **−0.8%** | **22.3%** | **9.3%** |
 
 LightGBM cannot extrapolate a trend, so it predicts the ratio of a day to a trailing level
-instead of the raw count. The P80 forecast covers 72% of days instead of 80%: in-sample
-residuals are smaller than out-of-time ones. A conformal correction from backtest errors is the
-next step.
+instead of the raw count. The raw P80 (quantile LightGBM) covers only 72% of days instead of
+80%: in-sample residuals are smaller than out-of-time ones. It is therefore calibrated with
+**split conformal prediction** on the backtest's own errors, each fold corrected only with the
+errors of earlier folds (no look-ahead):
 
-Staffing uses Erlang C with an 80/20 target and a 90% occupancy cap. At the busiest interval
-(152 calls in 30 minutes):
+| P80, on the 9 folds that could be calibrated | Coverage (target 80%) | Margin over P50 |
+|---|---:|---:|
+| Quantile LightGBM, raw | 75.5% | +7.4% |
+| Conformal-calibrated | **84.2%** | +11.5% |
 
-| Agents | 30 | 31 | **32** | 33 | 34 |
+It overshoots a little: conformal coverage assumes errors are exchangeable over time, and call
+volumes drift. Over-covering by four points is the safer side for staffing.
+
+Staffing targets 80% of calls answered within 20 s, with a 90% occupancy cap. Two models:
+
+* **Erlang C** assumes nobody hangs up. It is the industry default and it over-staffs.
+* **Erlang A** (M/M/N+M) lets callers abandon after an exponential patience. It is solved
+  numerically: a birth-death chain for the queue, and the waiting-time distribution of a
+  caller who finds k people ahead from a matrix exponential. Tests check that it equals
+  Erlang C with infinite patience and matches a discrete-event simulation. Because impatience
+  also lets a service level target be met by losing callers, abandonment is capped at 5%.
+* **Patience from the data:** total time callers were at risk of hanging up / number who did
+  (exponential maximum likelihood with censoring), counting only after the first 5 seconds,
+  where hang-ups are wrong numbers rather than impatience. Estimate 115 s; the generator's
+  truth is 110 s beyond the first seconds (the 5% gap is timestamps rounded to seconds).
+  Counting the first seconds would have given 158 s: a 40% error from one modelling choice.
+
+| P80 plan, 28 days | Agent hours on the phone | Peak agents | Service level delivered | Abandonment |
+|---|---:|---:|---:|---:|
+| Erlang C | 6,273 | 34 | 92.0% | - |
+| **Erlang A** | **6,000** (−4.4%) | **32** | 89.3% | 4.1% |
+
+At the busiest interval (152 calls in 30 minutes):
+
+| Agents | 29 | 30 | 31 | **32** | 33 |
 |---|---:|---:|---:|---:|---:|
-| Service level | 64.8% | 75.2% | **82.8%** | 88.3% | 92.2% |
-| ASA (s) | 42 | 24 | **14** | 9 | 5 |
+| Service level, Erlang C | 50.7% | 64.8% | 75.2% | **82.8%** | 88.3% |
+| Service level, Erlang A | 83.5% | 87.0% | 90.1% | 92.6% | 94.6% |
+| Abandonment, Erlang A | 5.8% | 4.5% | 3.4% | 2.5% | 1.9% |
 
-Erlang C ignores callers who hang up, so it slightly over-staffs; Erlang A or a simulation is
-the refinement.
+Erlang A already meets 80/20 with 29 agents, but at 5.8% abandonment; the cap moves it to 30.
 
 ### Segmentation
 
@@ -373,8 +400,9 @@ tests/               unit tests + end-to-end checks against the injected truth
 
 ## Next steps
 
-* Conformal calibration of the forecast intervals; Erlang A with abandonment.
 * CUSUM for slow complaint drifts.
+* Validate Erlang A against observed intervals (it needs the number of agents actually logged
+  in, which the synthetic PBX does not record); skills-based routing instead of one pool.
 * Close the gap of the local model: few-shot examples of the KPI formulas every local model got
   wrong, or a larger model with tensor parallelism on a second GPU; repeat each evaluation
   several times and report the spread.
