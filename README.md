@@ -120,11 +120,11 @@ NPS (survey-weighted)          SUM(ZN([Nps]) * [Surveys]) / SUM([Surveys])
 ```
 
 One sheet puts the ratio of sums next to the average of daily rates. On this data they differ
-by only 0.1-0.4 points, because daily volume is steady; the second is still wrong, since it
+by only 0.2-0.5 points, because daily volume is steady; the second is still wrong, since it
 weights a quiet Sunday like a busy Monday. Days with a broken data load are filtered out.
 
 The annotations name the planted events: the brake recall (March 2024, service queue down to
-66%), the price increase (December 2024, sales queue), the 15 July national holiday in the
+67%), the price increase (December 2024, sales queue), the 15 July national holiday in the
 forecast, and the complaint alert in the recall's first week. The complaint view is where a
 limit of the first detector showed up: its expected count was a trailing 12-week mean, so
 after the recall it stayed high for about three months, and a second rise of the same fault
