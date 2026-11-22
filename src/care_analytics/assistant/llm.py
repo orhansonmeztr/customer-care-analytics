@@ -1,10 +1,14 @@
 """Chat model clients behind one small interface.
 
-Two providers:
+Providers:
 
-* ``ollama`` (default): a local model through Ollama's native API, with "thinking" turned off.
-  No customer data leaves the machine.
+* ``vllm`` (default): the model served on the local GPU node (Qwen2.5-Coder-14B on vLLM,
+  see deploy/k8s), reached through ``kubectl port-forward``. No data leaves the network.
+  ``VLLM_BASE_URL`` (default ``http://localhost:18001/v1``), ``VLLM_MODEL``.
+* ``ollama``: a small local model through Ollama's native API, with "thinking" turned off;
+  a fallback when the GPU node is off. Much less accurate.
 * ``deepseek``: DeepSeek's OpenAI-compatible API, configured by ``DEEPSEEK_*`` variables.
+  The most accurate option, but questions, schema and results leave the network.
 * ``openai``: any OpenAI-compatible endpoint (OpenAI, Azure OpenAI v1 endpoint ...).
 
 Environment: ``ASSISTANT_PROVIDER``, ``ASSISTANT_MODEL``, ``ASSISTANT_BASE_URL``,
@@ -159,9 +163,27 @@ class OllamaChat:
         )
 
 
+def vllm_model() -> OpenAICompatible:
+    env = os.environ
+    return OpenAICompatible(
+        base_url=env.get("VLLM_BASE_URL", "http://localhost:18001/v1"),
+        model=env.get("VLLM_MODEL", "qwen2.5-coder-14b"),
+        api_key=env.get("VLLM_API_KEY", "none"),
+        timeout=float(env.get("VLLM_TIMEOUT_SECONDS", "120")),
+    )
+
+
+PROVIDERS = ("vllm", "ollama", "deepseek", "openai")
+
+
 def default_model(provider: str | None = None) -> ChatModel:
+    """The configured model; local by default so that data stays in the network."""
     load_dotenv()
-    provider = (provider or os.environ.get("ASSISTANT_PROVIDER", "ollama")).lower()
+    provider = (provider or os.environ.get("ASSISTANT_PROVIDER", "vllm")).lower()
+    if provider not in PROVIDERS:
+        raise ValueError(f"unknown provider {provider!r}, choose one of {', '.join(PROVIDERS)}")
+    if provider == "vllm":
+        return vllm_model()
     if provider == "deepseek":
         return deepseek_model()
     if provider == "openai":

@@ -457,7 +457,8 @@ with tabs[6]:
     st.caption(
         f"Text-to-SQL over the star schema with `{model.name}`. Every query passes a guard: one "
         "read-only SELECT, allow-listed tables, no personal-data columns, a row limit, on a "
-        "read-only connection. A local model on CPU needs about a minute per question."
+        "read-only connection. The default model runs on the local GPU node, so no data leaves "
+        "the network; set ASSISTANT_PROVIDER=deepseek for the most accurate model."
     )
     examples = [g["question"] for g in load_golden()]
     pick = st.selectbox("Example questions", [""] + examples)

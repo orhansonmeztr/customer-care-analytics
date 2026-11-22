@@ -171,3 +171,26 @@ def test_hard_set_with_perfect_model(paths):
     }
     s = evaluate(paths, ScriptedModel(replies, name="perfect"), set_name="hard")
     assert s["golden_set"] == "hard" and s["passed"] == s["questions"] == len(golden)
+
+
+def test_default_provider_is_local(monkeypatch, tmp_path):
+    from care_analytics.assistant.llm import OpenAICompatible, default_model
+
+    monkeypatch.chdir(tmp_path)  # no .env here
+    monkeypatch.delenv("ASSISTANT_PROVIDER", raising=False)
+    for v in ("VLLM_BASE_URL", "VLLM_MODEL"):
+        monkeypatch.delenv(v, raising=False)
+    m = default_model()
+    assert isinstance(m, OpenAICompatible)
+    assert m.base_url.startswith("http://localhost") and m.name == "qwen2.5-coder-14b"
+    with pytest.raises(ValueError):
+        default_model("nonsense")
+
+
+def test_refusal_wrapped_in_a_query_is_a_refusal(paths):
+    q = "Phone numbers?"
+    reply = "```sql\nSELECT 'REFUSE: personal data is not available.' AS response\n```"
+    a, con = _assistant(paths, {q: [reply]})
+    res = a.ask(q)
+    assert res.status == "refused" and "personal data" in res.answer
+    con.close()

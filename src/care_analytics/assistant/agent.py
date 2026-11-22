@@ -48,9 +48,17 @@ def extract_sql(text: str) -> str | None:
     return None
 
 
+_REFUSE_LITERAL = re.compile(r"(?is)^\s*select\s+'REFUSE:?\s*([^']*)'")
+
+
 def _refusal(text: str) -> str | None:
-    m = re.search(r"REFUSE:?\s*(.*)", text)
-    return (m.group(1).strip() or "refused") if m and extract_sql(text) is None else None
+    sql = extract_sql(text)
+    if sql is None:
+        m = re.search(r"REFUSE:?\s*(.*)", text)
+        return (m.group(1).strip() or "refused") if m else None
+    # some models wrap the refusal in a query: SELECT 'REFUSE: ...' AS response
+    m = _REFUSE_LITERAL.match(sql)
+    return (m.group(1).strip() or "refused") if m else None
 
 
 def _preview(df: pd.DataFrame, n: int = 15) -> str:
