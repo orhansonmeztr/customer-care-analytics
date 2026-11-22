@@ -274,6 +274,16 @@ def cusum_against_truth(alarms: pd.DataFrame, paths: Paths) -> list[dict]:
     return out
 
 
+def _export_weekly(res: pd.DataFrame, paths: Paths) -> None:
+    """Every model x fault code x week with its expected count, for Tableau / Power BI."""
+    brand = res["model"].str.split().str[0]
+    res.assign(brand=brand).rename(columns={"n": "tickets", "park": "cars_on_road",
+                                            "baseline": "expected_tickets"})[
+        ["week", "brand", "model", "fault_code", "tickets", "expected_tickets", "cars_on_road",
+         "q_value", "alert"]
+    ].to_csv(paths.exports / "complaint_weekly.csv", index=False)  # fmt: skip
+
+
 def run_anomaly(paths: Paths) -> dict:
     con = connect(paths)
     weekly = weekly_counts(con)
@@ -301,6 +311,7 @@ def run_anomaly(paths: Paths) -> dict:
     alerts = res[res["alert"]].sort_values("week")
     alerts.to_parquet(paths.outputs / "complaint_alerts.parquet", index=False)
     res.to_parquet(paths.outputs / "complaint_weekly.parquet", index=False)
+    _export_weekly(res, paths)
     truth = score_against_truth(alerts, paths)
     kind = _classify(alerts, truth, "week")
     alerts = alerts.assign(kind=kind)

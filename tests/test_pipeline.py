@@ -109,6 +109,8 @@ def test_downstream_steps_run(paths):
     assert 0 < ch["churn_rate_train"] < 1
     an = run_anomaly(paths)
     assert an["series"] > 0
+    weekly = pd.read_csv(paths.exports / "complaint_weekly.csv")
+    assert {"week", "model", "fault_code", "tickets", "expected_tickets", "alert"} <= set(weekly)
     from care_analytics.staffing_validation import run_staffing_validation
 
     sv = run_staffing_validation(paths, days=7)
