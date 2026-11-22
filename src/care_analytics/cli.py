@@ -63,7 +63,7 @@ def _assistant(argv: list[str]) -> None:
     ask.add_argument("--explain", action="store_true", help="also write a short answer")
     ev = sub.add_parser("eval-assistant", help="run the golden-set evaluation")
     ev.add_argument("--ids", nargs="*", help="only these question ids")
-    ev.add_argument("--set", dest="set_name", default="core", choices=["core", "hard"])
+    ev.add_argument("--set", dest="set_name", default="core", choices=["core", "hard", "holdout"])
     for p in (ask, ev):
         p.add_argument("--data-dir", default=None)
         p.add_argument("--model", default=None, help="model name (default: $ASSISTANT_MODEL)")

@@ -21,7 +21,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | **How many agents?** | Planned on a conformal-calibrated P80 forecast with **Erlang A**, which models callers who hang up (patience estimated from the data: 115 s). It needs **4.4% fewer agent hours** than Erlang C for the same 80/20 target, with abandonment capped at 5%; the Erlang C plan would over-deliver at 92%. In a simulated, staffed center Erlang A predicts the service level within 6 points, Erlang C within 29. Staffing the four queues as separate groups costs 36% more hours than one pooled group; cross-training half of the agents gets most of that back. 28 days in 30-minute intervals, 30% shrinkage. |
 | **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
 | **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. A daily CUSUM was tested against it at equal false alarms and caught the drift no earlier. |
-| **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network) answers 16 of 20 golden-set questions correctly in 0.9 s, with no data leaving the network; through the DeepSeek API, `deepseek-flash` answers 19 of 20 in each of three runs and `deepseek-v4-pro` 20. The local model is the default; DeepSeek is used only when chosen explicitly, because data then leaves the network (see [recommended configuration](#recommended-configuration)). See [Analytics assistant](#analytics-assistant). |
+| **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network), with no data leaving the network, answers **11 of 12 held-out questions**, the same as `deepseek-flash` through the DeepSeek API; on the everyday set it gets 21 of 24 against flash's 24. Prompt 1.3 (KPI and pattern examples) lifted the local model from 6 to 11 on questions that played no part in writing it. The local model is the default; DeepSeek is used only when chosen explicitly, because data then leaves the network (see [recommended configuration](#recommended-configuration)). See [Analytics assistant](#analytics-assistant). |
 
 ## What it shows (mapped to the role)
 
@@ -382,8 +382,8 @@ What the run shows:
   small models joined tables the question did not need, invented columns and averaged daily
   rates instead of dividing sums. The 14B coder model's real mistakes were fewer and
   narrower: it computed the service level from all answered calls instead of those answered
-  within 20 seconds, and kept the empty fault code as a group. For a customer care team that
-  must not send data outside, that is the trade-off: 16/20 locally, 19/20 through an API.
+  within 20 seconds, and kept the empty fault code as a group. At prompt 1.1 the trade-off
+  was 16/20 locally against 19/20 through an API; prompt 1.3 (below) narrows it.
 * **Definitions matter as much as SQL.** In its first run DeepSeek excluded the two days with
   a broken data load from a monthly call count. Right for a trend chart, wrong for a count of
   calls that did happen. The lesson for a real deployment: say in the KPI rules when
@@ -415,7 +415,7 @@ What the run shows:
   no other result changed. The lesson is the same as for the incomplete-load days: the
   assistant is only as good as the definitions written down for it. The extra reasoning of
   the pro model bought nothing on this set. The local 14B model was not run on the hard set
-  (the GPU node was off).
+  at prompt 1.1 (the GPU node was off); see prompt 1.3 below.
 * **One run is not a result.** That 13/13 did not repeat: three more runs of flash on the hard
   set gave 12, 11 and 12. Across them, three real errors in 39 answers: filtering before
   `LAG()` (the same mistake as pro), inventing holiday type values that are not in the data
@@ -432,18 +432,43 @@ What the run shows:
   Comparison v2 matches a relabelled date bucket by chronological order; the values must
   still be equal (tested). One such case still fails for every model that labels months as
   `2025-01`: the reference for "CSAT by month" returns month *numbers*, which v2 does not
-  relabel (`deepseek-v4-pro` returned numbers and passed). The evaluator was not tuned
-  further, to avoid fitting it to the results.
+  relabel (`deepseek-v4-pro` returned numbers and passed). **Comparison v3** closes that
+  gap: the relabelling now works in both directions (a date in the answer against a month
+  number in the reference), with a test that wrong values still fail. All stored prompt-1.2
+  and 1.3 runs were re-graded from their SQL; only this question changed.
 * Prompt 1.1 adds two general rules (only listed columns, as few tables as possible) and sends
   invalid SQL back for repair instead of treating it as blocked.
+* **Prompt 1.3 closes most of the local model's gap, measured on questions it was not tuned
+  on.** At prompt 1.2 the 14B model failed the hard set badly (3/13): service level from the
+  wrong column or an average of daily rates, a wrong NPS formula, top-per-group without a
+  window, invented date columns, `v_kpi_daily` read as one row per day when it has one per
+  day *and queue*. Examples written against those failures would only be graded on the
+  questions they were written from, so a **held-out set** came first
+  ([`golden_set_holdout.json`](src/care_analytics/assistant/golden_set_holdout.json),
+  `care eval-assistant --set holdout`): 12 questions with the same skills on other queues,
+  periods and tables, scored at prompt 1.2 before the prompt changed and not inspected until
+  1.3 was final. Prompt 1.3 adds the rules above with column names and four examples on data
+  no question asks about. Three runs each
+  ([report](docs/eval/prompt-1.3_qwen-coder-14b-vs-deepseek-flash_3-runs.md)):
+
+  | Set | Qwen2.5-Coder-14B, 1.2 → 1.3 | `deepseek-flash`, 1.2 → 1.3 |
+  |---|---:|---:|
+  | **holdout (12, not tuned on)** | 6 → **11** | 10 → **11** |
+  | core (24) | 18 → 21 | 23 → 24 |
+  | hard (13) | 3 → 9 | 11-12 → 11-12 |
+
+  The local model's runs are identical; flash varies by one question at most. On the
+  held-out set the two are level; the remaining gap is on multi-step questions (month over
+  month across a year boundary, a cohort with a time window after an event, counting
+  groups). The prompt did not cost the API model anything.
 
 ### Recommended configuration
 
 | Situation | Provider | Why |
 |---|---|---|
-| Real customer data (default) | `vllm`: Qwen2.5-Coder-14B on the local GPU node | Questions, schema and results stay in the network. 16/20 on the core set; misses some KPI definitions. |
+| Real customer data (default) | `vllm`: Qwen2.5-Coder-14B on the local GPU node | Questions, schema and results stay in the network. Prompt 1.3: 11/12 held-out (same as flash), 21/24 core, 9/13 hard. |
 | GPU node off | none for real customer data | The local assistant is unavailable; the rest of the pipeline and the dashboard work without it. Do not fall back to an API with real data. |
-| Synthetic or approved data, best accuracy | `deepseek` (`deepseek-flash`) | 19/20 on the core set in every run, 11-12/13 on the hard set, about 2 s per question, under a cent per evaluation. Data goes to a provider abroad: for real customer data this is a cross-border transfer under KVKK and needs legal approval first. |
+| Synthetic or approved data, best accuracy | `deepseek` (`deepseek-flash`) | Prompt 1.3: 11/12 held-out, 24/24 core and 11-12/13 hard in three runs, about 2 s per question, under a cent per evaluation. Data goes to a provider abroad: for real customer data this is a cross-border transfer under KVKK and needs legal approval first. |
 
 `deepseek-v4-pro` was not more accurate than flash where it mattered (the hard set) and is
 three times slower, so flash is the API choice. Whatever the model, the guard decides what
@@ -485,6 +510,5 @@ tests/               unit tests + end-to-end checks against the injected truth
 
 ## Next steps
 
-* Close the gap of the local model: few-shot examples of the KPI formulas every local model got
-  wrong, or a larger model with tensor parallelism on a second GPU; repeat each evaluation
-  several times and report the spread.
+* Multi-step questions are where both models still fail: a second held-out set aimed at
+  them, and a larger local model with tensor parallelism on a second GPU.

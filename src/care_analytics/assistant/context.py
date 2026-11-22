@@ -11,10 +11,10 @@ from .guard import ALLOWED_TABLES
 
 # Changes to the rules or examples change the results: bump the version and re-run the
 # evaluation (docs/eval keeps the result of each version).
-PROMPT_VERSION = "1.2"  # 1.2: states when repeat_7d is NULL
+PROMPT_VERSION = "1.3"  # 1.2: states when repeat_7d is NULL; 1.3: KPI and pattern examples
 
 TABLE_NOTES = {
-    "v_kpi_daily": "one row per day and queue. Use it for KPIs. Rates over a period must be "
+    "v_kpi_daily": "one row per day AND queue (a day has one row per queue). Use it for KPIs. Rates over a period must be "
     "re-computed from the counts (e.g. sum(abandoned) / sum(offered - short_abandons)), "
     "never averaged. is_incomplete_load marks days with a broken data load.",
     "v_kpi_interval": "one row per 30-minute interval, all queues pooled",
@@ -50,7 +50,18 @@ Rules:
   service level = answered calls within 20 s / (offered - short abandons)
   abandon rate = abandoned / (offered - short abandons)
   AHT = average handle_sec of answered calls; NPS = 100 * (share of nps >= 9 - share of nps <= 6)
-  Rates for a period are ratios of sums, not averages of daily rates.
+  In v_kpi_daily: service level = sum(answered_in_20s) / sum(offered - short_abandons).
+  Rates for a period are ratios of sums. Never average service_level_20s, abandon_rate or
+  any other rate column over several days or queues.
+- Date columns: fact_calls.call_date, fact_surveys.call_date, fact_tickets.opened_date,
+  fact_service_orders.order_date, dim_vehicle.sale_date and warranty_end. Use year(col) = 2024
+  for a year, date_trunc('month', col) for months and date_trunc('week', col) for weeks
+  (weeks start on Monday). Add days with col + INTERVAL 30 DAY.
+- Calls per day: count fact_calls per call_date first, then average those daily counts.
+- An identified customer is customer_id IS NOT NULL; no join is needed for that.
+- "For each X, the Y with the most Z": group by X and Y and keep the top row per X with
+  QUALIFY row_number() OVER (PARTITION BY X ORDER BY count(*) DESC) = 1. List the GROUP BY
+  columns explicitly (DuckDB does not allow QUALIFY with GROUP BY ALL).
 - Use only the columns listed for each table. Use as few tables as possible: join another table
   only when the question needs one of its columns.
 - Return rates as fractions between 0 and 1. Give columns short readable aliases.
@@ -65,6 +76,24 @@ EXAMPLES = [
     ("Kestrel K5 için açılan şikâyet sayısı fault code bazında nedir?",
      "SELECT t.fault_code, count(*) AS tickets\nFROM fact_tickets t JOIN dim_vehicle v USING (vin)\n"
      "WHERE v.model = 'Kestrel K5' AND t.fault_code IS NOT NULL\nGROUP BY 1 ORDER BY 2 DESC"),
+    ("Service level of each queue by month in 2023",
+     "SELECT queue, date_trunc('month', call_date) AS month,\n"
+     "       sum(answered_in_20s) / sum(offered - short_abandons) AS service_level\n"
+     "FROM v_kpi_daily\nWHERE year(call_date) = 2023\nGROUP BY ALL ORDER BY 1, 2"),
+    ("Genel kuyruğun 2023 NPS değeri",
+     "SELECT 100 * (avg((nps >= 9)::INT) - avg((nps <= 6)::INT)) AS nps\n"
+     "FROM fact_surveys\nWHERE queue = 'genel' AND year(call_date) = 2023"),
+    ("For each city, the reason code with the most calls in 2023",
+     "SELECT c.city, f.reason_code, count(*) AS calls\n"
+     "FROM fact_calls f JOIN v_customer c USING (customer_id)\n"
+     "WHERE year(f.call_date) = 2023 AND f.reason_code IS NOT NULL\n"
+     "GROUP BY c.city, f.reason_code\n"
+     "QUALIFY row_number() OVER (PARTITION BY c.city ORDER BY count(*) DESC) = 1"),
+    ("Average calls per day on holiday eves (arife) and on other days in 2023",
+     "SELECT d.is_arife, avg(c.calls) AS calls_per_day\n"
+     "FROM (SELECT call_date, count(*) AS calls FROM fact_calls\n"
+     "      WHERE year(call_date) = 2023 GROUP BY call_date) c\n"
+     "JOIN dim_date d ON d.date = c.call_date\nGROUP BY 1"),
 ]  # fmt: skip
 
 
