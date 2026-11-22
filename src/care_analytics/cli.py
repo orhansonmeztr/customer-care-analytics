@@ -10,7 +10,7 @@ from .paths import get_paths
 
 STEPS = [
     "generate", "quality", "warehouse", "forecast", "segment", "churn", "anomaly",
-    "validate-staffing",
+    "validate-staffing", "skills-routing",
 ]  # fmt: skip
 
 
@@ -48,6 +48,10 @@ def _run(step: str, args) -> dict:
         from .staffing_validation import run_staffing_validation
 
         return run_staffing_validation(paths, days=args.sim_days)
+    if step == "skills-routing":
+        from .skills_routing import run_skills_routing
+
+        return run_skills_routing(paths, days=args.sim_days)
     raise ValueError(step)
 
 
@@ -109,7 +113,12 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--scale", type=float, default=1.0, help="data size (generate only)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--folds", type=int, default=12, help="forecast backtest folds")
-    ap.add_argument("--sim-days", type=int, default=28, help="simulated days (validate-staffing)")
+    ap.add_argument(
+        "--sim-days",
+        type=int,
+        default=28,
+        help="simulated days (validate-staffing, skills-routing)",
+    )
     args = ap.parse_args(argv)
     steps = STEPS if args.step == "run-all" else [args.step]
     for step in steps:

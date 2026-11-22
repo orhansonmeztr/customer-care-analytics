@@ -265,3 +265,67 @@ def test_staffing_changes_between_intervals():
                          np.array([8, 0, 8]))  # fmt: skip
     assert not calls.loc[calls["interval"] == 1, "answered"].any()  # nobody logged in
     assert calls.loc[calls["interval"] == 2, "answered"].mean() > 0.5
+
+
+def _skills_cfg(**kw):
+    from care_analytics.queue_sim import CenterConfig
+
+    base = dict(handle_log_mean=0.0, handle_log_sd=0.0, patience_sec=60, patience_grace_sec=0,
+                absenteeism_mean=0, absenteeism_sd=0, day_noise_sd=0)  # fmt: skip
+    return CenterConfig(**(base | kw))
+
+
+def test_skills_simulator_matches_erlang_a_for_one_queue():
+    from care_analytics.queue_sim import interval_stats
+    from care_analytics.skills_routing import Group, simulate_skills_day
+    from care_analytics.staffing import erlang_a
+
+    cfg = _skills_cfg(exponential_handle=True, stationary=True)
+    rng = np.random.default_rng(5)
+    n_int, calls, agents = 24, 100.0, 13
+    days = [simulate_skills_day(rng, cfg, {"q": np.full(n_int, calls)}, {"q": (np.log(240), 0)},
+                                {"g": np.full(n_int, agents)}, [Group("g", ("q",))],
+                                day_start=d * 86400.0).assign(day=d, agents=agents)
+            for d in range(40)]  # fmt: skip
+    st = interval_stats(pd.concat(days))
+    st = st[st["interval"] > 0]
+    r = erlang_a(calls, 240, 60, agents)
+    assert st["in_target"].sum() / st["offered"].sum() == pytest.approx(
+        r["service_level"], abs=0.02
+    )
+    ab = (st["abandoned"] + st["short"]).sum() / st["offered"].sum()
+    assert ab == pytest.approx(r["p_abandon"], abs=0.01)
+
+
+def test_routing_prefers_specialists_and_generalists_cover_any_queue():
+    from care_analytics.skills_routing import groups_for, simulate_skills_day
+
+    cfg = _skills_cfg()
+    exp = {"satis": np.array([40.0, 40.0]), "genel": np.array([40.0, 40.0])}
+    handle = {"satis": (np.log(120), 0.3), "genel": (np.log(120), 0.3)}
+    groups = groups_for(("satis", "genel"))
+    # only sales specialists and generalists: general calls must all go to generalists
+    calls = simulate_skills_day(np.random.default_rng(2), cfg, exp, handle,
+                                {"satis": np.array([6, 6]), "generalist": np.array([6, 6])},
+                                groups)  # fmt: skip
+    ans = calls[calls["answered"]]
+    assert set(ans.loc[ans["queue"] == "genel", "served_by"]) == {"generalist"}
+    # with spare specialists, most sales calls are answered by them, not by generalists
+    sales = ans[ans["queue"] == "satis"]
+    assert (sales["served_by"] == "satis").mean() > 0.8
+
+
+def test_flex_plan_keeps_headcount_and_split():
+    from care_analytics.skills_routing import GENERALIST, flex_plan
+
+    per_q = {"a": np.array([5, 0]), "b": np.array([3, 0])}
+    pooled = np.array([7, 0])
+    work = {"a": np.array([3.0, 0.0]), "b": np.array([1.0, 0.0])}
+    ded = flex_plan(per_q, pooled, None, work)
+    assert ded["a"].tolist() == [5, 0] and ded[GENERALIST].tolist() == [0, 0]
+    half = flex_plan(per_q, pooled, 0.5, work, extra=2)
+    assert half["a"][0] + half["b"][0] + half[GENERALIST][0] == 7 + 2
+    assert half["a"][0] == 3 and half["b"][0] == 1  # 4 specialists split 3:1 by workload
+    assert half[GENERALIST][1] == 0  # closed intervals get no extra agents
+    pool = flex_plan(per_q, pooled, 1.0, work)
+    assert pool["a"].sum() == 0 and pool[GENERALIST].tolist() == [7, 0]

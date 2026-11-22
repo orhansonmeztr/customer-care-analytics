@@ -18,7 +18,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 |---|---|
 | **Can we trust the data?** | Not as delivered. The pipeline found and fixed a 3-hour timezone error in the old PBX, one missing and one 40%-loaded day, 4,400 replayed call records, 4,400 duplicate customers (precision 100%, recall 98.3% against the injected truth) and phone numbers typed into complaint texts (masked for KVKK). |
 | **How many calls next month?** | LightGBM forecasts the whole month on its first day with **9.7% WAPE**, against 15.5% for the best simple baseline. The gap is widest on holidays (22% vs 91–102%), because religious holidays move every year and "same day last year" breaks. |
-| **How many agents?** | Planned on a conformal-calibrated P80 forecast with **Erlang A**, which models callers who hang up (patience estimated from the data: 115 s). It needs **4.4% fewer agent hours** than Erlang C for the same 80/20 target, with abandonment capped at 5%; the Erlang C plan would over-deliver at 92%. In a simulated, staffed center Erlang A predicts the service level within 6 points, Erlang C within 29. 28 days in 30-minute intervals, 30% shrinkage. |
+| **How many agents?** | Planned on a conformal-calibrated P80 forecast with **Erlang A**, which models callers who hang up (patience estimated from the data: 115 s). It needs **4.4% fewer agent hours** than Erlang C for the same 80/20 target, with abandonment capped at 5%; the Erlang C plan would over-deliver at 92%. In a simulated, staffed center Erlang A predicts the service level within 6 points, Erlang C within 29. Staffing the four queues as separate groups costs 36% more hours than one pooled group; cross-training half of the agents gets most of that back. 28 days in 30-minute intervals, 30% shrinkage. |
 | **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
 | **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. A daily CUSUM was tested against it at equal false alarms and caught the drift no earlier. |
 | **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network) answers 16 of 20 golden-set questions correctly in 0.9 s, with no data leaving the network; through the DeepSeek API, `deepseek-flash` answers 19 of 20 in each of three runs and `deepseek-v4-pro` 20. The local model is the default; DeepSeek is used only when chosen explicitly, because data then leaves the network (see [recommended configuration](#recommended-configuration)). See [Analytics assistant](#analytics-assistant). |
@@ -63,7 +63,7 @@ flowchart LR
 
 ```bash
 uv venv && uv pip install -e ".[dev,dashboard]"
-care run-all                      # ~2 minutes: generate, quality, warehouse, forecast, segment, churn, anomaly
+care run-all                      # ~3 minutes: generate ... anomaly, then the staffing simulations
 streamlit run dashboard/app.py
 ```
 
@@ -218,6 +218,35 @@ little margin: a quarter of busy intervals miss 80/20. Part of that is absenteei
 interval, which neither plan includes; shrinkage covers planned absence, not a 3% average
 no-show on top. The model to *predict* with is clearly Erlang A; the plan to *staff* with is
 Erlang A plus an explicit buffer for unplanned absence.
+
+**Skills-based routing** ([`skills_routing.py`](src/care_analytics/skills_routing.py),
+`care skills-routing`). The four queues differ: complaints take 440 s per call, general
+questions 205 s. Staffing each queue on its own is safe but expensive, because every small
+group carries its own safety margin. One pooled group is cheapest, but then every agent
+handles complaints and sales. The middle ground is to cross-train some of the agents.
+An event-driven simulator routes each call to an idle specialist of its queue first, then
+to an idle generalist; a free agent takes the longest-waiting call among its skills. All
+designs are sized with Erlang A and run on the same random calls, with the same broken
+assumptions as above. Designs that miss the target (every queue at 80/20, at most 5%
+abandoned) get extra generalists until they pass:
+
+| Design | Extra generalists per interval | Agent hours (28 days) | vs dedicated | Worst queue SL |
+|---|---:|---:|---:|---:|
+| Dedicated, each queue sized alone | 0 | 8,416 | | 87.5% (servis) |
+| 10% cross-trained | 4 | 7,194 | −14.5% | 87.7% (genel) |
+| 30% cross-trained | 3 | 6,858 | −18.5% | 89.4% (genel) |
+| 50% cross-trained | 2 | 6,522 | −22.5% | 88.4% (genel) |
+| Pooled, all generalists | 1 | **6,186** | **−26.5%** | 87.4% (genel) |
+
+At this size (about 1,900 calls a day over four queues) separation costs a lot: the
+dedicated plan needs 36% more hours than the pooled one and over-delivers at 89.5%. Cross-training half of
+the agents captures most of the pooling gain. The pooled requirement alone is not enough on any
+design: absenteeism pushes abandonment just above 5%, so one extra agent per interval is needed
+even when everyone is a generalist. The small general-inquiry queue is the one that suffers
+when specialists are scarce, since its own group is one or two agents. The extra agents come
+in whole agents per interval (about 5% of hours each), so the passing designs overshoot a
+little. Not modelled: generalists being slower or costlier than specialists, and transfers
+between queues; both shrink the gain of pooling.
 
 ### Segmentation
 
@@ -433,12 +462,13 @@ src/care_analytics/
   staffing.py        Erlang C, Erlang A, patience estimate
   queue_sim.py       discrete-event simulation of a staffed center
   staffing_validation.py  staffing models against the simulation
+  skills_routing.py  dedicated, cross-trained and pooled agent groups
   segmentation.py    RFM and k-means
   churn.py           post-warranty churn, cost-based call list, explanations
   anomaly.py         complaint early warning
   assistant/         text-to-SQL assistant: guard, context, agent loop, golden set, evaluation
-deploy/k8s/          vLLM deployment of the local model (k3s, one GPU)
   cli.py             `care` command
+deploy/k8s/          vLLM deployment of the local model (k3s, one GPU)
 dashboard/app.py     Streamlit dashboard
 docs/kpi_definitions.md
 tests/               unit tests + end-to-end checks against the injected truth
@@ -449,12 +479,12 @@ tests/               unit tests + end-to-end checks against the injected truth
 * Synthetic data: the relationships are the ones the generator encodes, so absolute numbers
   are illustrations. The value is in the method and in checking it against known truth.
 * Amounts are nominal TL with no inflation; real multi-year analysis needs a deflator.
-* Staffing assumes one pooled skill group and Erlang C.
+* Staffing models are checked against a simulator built on the same synthetic data, not
+  against a real center's logged-in agent records.
 * The churn save rate and voucher redemption are assumptions until a randomized test measures them.
 
 ## Next steps
 
-* Skills-based routing instead of one pooled agent group.
 * Close the gap of the local model: few-shot examples of the KPI formulas every local model got
   wrong, or a larger model with tensor parallelism on a second GPU; repeat each evaluation
   several times and report the spread.
