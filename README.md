@@ -13,6 +13,9 @@ The company, "Meridian Auto", is fictional and so is all the data. A generator p
 customers. It injects the defects real extracts have and plants business events with known
 ground truth, so every step of the pipeline can be *scored*, not just run.
 
+**Live dashboard:** [Meridian Auto on Tableau Public](https://public.tableau.com/app/profile/orhan.s.nmez/viz/MeridianAuto-CustomerCareAnalytics/MeridianAutocustomercare), built from the CSV extracts
+(see [Tableau Public dashboard](#tableau-public-dashboard)).
+
 ## Executive summary
 
 | Question | Answer |
@@ -37,7 +40,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | Segmentation | RFM rules + k-means, profiled in business terms with an action per segment |
 | Classification | Out-of-time validation, leakage guard, calibration (Brier), lift, cost-based threshold, explanations |
 | Anomaly detection | Poisson baselines per car on the road, Benjamini-Hochberg false discovery control; a daily Poisson CUSUM compared at equal false alarms |
-| Dashboards | Streamlit app; CSV extracts for Tableau / Power BI in `data/exports` |
+| Dashboards | Streamlit app; a [Tableau Public dashboard](https://public.tableau.com/app/profile/orhan.s.nmez/viz/MeridianAuto-CustomerCareAnalytics/MeridianAutocustomercare) built from the CSV extracts in `data/exports` |
 | AI decision support | Text-to-SQL assistant with a SQL guard, golden sets (core, hard, held-out) scored by execution accuracy over repeated runs, versioned prompts ([`assistant/`](src/care_analytics/assistant)) |
 | Engineering | CLI, tests on the injected truth, GitHub Actions, Docker; local LLM serving with vLLM on k3s ([`deploy/k8s`](deploy/k8s)) |
 
@@ -96,6 +99,36 @@ care ask "Which queue had the lowest service level in March 2024?" --provider de
 care eval-assistant --set hard --provider deepseek           # about a minute
 ASSISTANT_PROVIDER=deepseek streamlit run dashboard/app.py
 ```
+
+### Tableau Public dashboard
+
+[Meridian Auto: customer care](https://public.tableau.com/app/profile/orhan.s.nmez/viz/MeridianAuto-CustomerCareAnalytics/MeridianAutocustomercare) is built from three extracts that `care run-all` writes to
+`data/exports`:
+
+| Extract | Grain | View |
+|---|---|---|
+| `kpi_daily.csv` | day × queue, counts and rates | KPI trend against the 80/20 target; ratio of sums vs average of daily rates |
+| `staffing_plan.csv` | 30-minute interval of the next 28 days | daily P50/P80 forecast; intraday Erlang C vs Erlang A plan with a day picker |
+| `complaint_weekly.csv` | week × model × fault code, actual and expected tickets | complaint early warning with model and fault-code pickers |
+
+Rates are calculated fields over the counts, never averages of the rate columns:
+
+```
+Service Level (ratio of sums)  SUM([Answered In 20S]) / SUM([Offered] - [Short Abandons])
+Abandon Rate (ratio of sums)   SUM([Abandoned]) / SUM([Offered] - [Short Abandons])
+NPS (survey-weighted)          SUM(ZN([Nps]) * [Surveys]) / SUM([Surveys])
+```
+
+One sheet puts the ratio of sums next to the average of daily rates. On this data they differ
+by only 0.1-0.4 points, because daily volume is steady; the second is still wrong, since it
+weights a quiet Sunday like a busy Monday. Days with a broken data load are filtered out.
+
+The annotations name the planted events: the brake recall (March 2024, service queue down to
+66%), the price increase (December 2024, sales queue), the 15 July national holiday in the
+forecast, and the complaint alert in the recall's first week. The complaint view also shows a
+limit of the detector: the expected count is a trailing 13-week mean, so after the recall it
+stays high for about three months, and a second rise of the same fault in that window would
+be missed. Leaving alert weeks out of the baseline would fix it.
 
 ## Data
 
