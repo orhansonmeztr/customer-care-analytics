@@ -118,7 +118,15 @@ def test_downstream_steps_run(paths):
         sv["accuracy"]["service_level"]["erlang_a"]["mae"]
         < sv["accuracy"]["service_level"]["erlang_c"]["mae"]
     )
+    from care_analytics.skills_routing import run_skills_routing
+
+    sr = run_skills_routing(paths, days=7, max_extra=4)
+    plans = json.loads((paths.outputs / "skills_routing.json").read_text())["plans"]
+    by_name = {p["plan"]: p for p in plans}
+    # pooling needs fewer agent hours than separate groups for each queue
+    assert by_name["pooled"]["as_planned"]["agent_hours"] < sr["dedicated_hours"]
     for f in (
+        "skills_routing.md",
         "data_quality.md",
         "forecast_staffing.md",
         "segmentation.md",
