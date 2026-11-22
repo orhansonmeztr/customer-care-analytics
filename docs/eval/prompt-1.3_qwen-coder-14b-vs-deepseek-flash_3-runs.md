@@ -30,6 +30,11 @@ examples (monthly service level, NPS, top-per-group, average per day) on data no
 deepseek-flash at prompt 1.2 on core and hard: 23/23/23 of 24 and 12/11/12 of 13 (comparison
 v2, see [deepseek-flash_prompt-1.2_3-runs.md](deepseek-flash_prompt-1.2_3-runs.md)); its SQL was not kept, so it is not re-graded here.
 
+**Re-run on regenerated data.** The post-holiday fix changed the calendar the generator uses, so
+the whole dataset shifted slightly. Three more prompt-1.3 runs of qwen2.5-coder-14b on the new
+data gave the same scores (11/12 holdout, 21/24 core, 9/13 hard, every run) and failed the same
+questions. deepseek-flash was not re-run.
+
 ## Questions that failed at least once
 
 * **deepseek-flash, prompt 1.2, holdout:** hold-05, hold-06

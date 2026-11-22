@@ -23,6 +23,17 @@ def test_religious_holidays_move_and_have_eves():
     assert cal.loc["2024-10-29", "holiday_kind"] == "national"
 
 
+def test_post_holiday_is_the_first_working_day():
+    cal = holiday_calendar("2023-01-01", "2026-12-31").set_index("date")
+    post = cal.index[cal["is_post_holiday"]]
+    assert (post.day_of_week < 5).all()
+    # Ramazan 2024 ends Fri 12 April: the backlog arrives Monday, not Saturday
+    assert not cal.loc["2024-04-13", "is_post_holiday"]
+    assert bool(cal.loc["2024-04-15", "is_post_holiday"])
+    # Kurban 2026 ends Sat 30 May: Sunday is skipped
+    assert bool(cal.loc["2026-06-01", "is_post_holiday"])
+
+
 def test_erlang_c_matches_mm1():
     # with one agent Erlang C reduces to M/M/1, where P(wait) = utilisation
     assert erlang_c(0.5, 1) == pytest.approx(0.5)

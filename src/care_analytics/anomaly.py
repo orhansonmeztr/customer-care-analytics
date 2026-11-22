@@ -443,9 +443,9 @@ def run_anomaly(paths: Paths) -> dict:
                      + " | ".join(lag(t["lags"].get(n)) for n in names) + " |")  # fmt: skip
     lines += [
         "",
-        "**Result: on this data the CUSUM does not beat the weekly test.** At the same number "
-        "of false alarms it detects the slow battery drift no earlier; it gets earlier only by "
-        "raising many more alarms. The drift grows linearly from zero, so its first weeks add "
+        "**Result: on this data the CUSUM does not beat the weekly test.** Even its strictest "
+        "setting raises more false alarms than the weekly test; it detects the slow battery "
+        "drift earlier only by raising more alarms. The drift grows linearly from zero, so its first weeks add "
         "very little, and the weekly test already uses a per-car baseline. The CUSUM is kept "
         "as a second detector that can fire on any day.",
         "",

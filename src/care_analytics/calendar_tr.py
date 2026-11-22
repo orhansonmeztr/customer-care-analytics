@@ -55,6 +55,16 @@ def holiday_calendar(start: str, end: str) -> pd.DataFrame:
             arife.add(first - pd.Timedelta(days=1))
             post.add(first + pd.Timedelta(days=length))
 
+    # the backlog lands on the first working day: skip weekends and holidays after the bayram
+    def next_working_day(d: pd.Timestamp) -> pd.Timestamp:
+        while d.day_of_week >= 5 or (
+            d in by_date.index and by_date.loc[d, "holiday_kind"] != "none"
+        ):
+            d += pd.Timedelta(days=1)
+        return d
+
+    post = {next_working_day(d) for d in post}
+
     cal = by_date.reset_index()
     cal["is_holiday"] = cal["holiday_kind"] != "none"
     cal["is_arife"] = cal["date"].isin(arife) & ~cal["is_holiday"]
