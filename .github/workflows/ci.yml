@@ -19,7 +19,7 @@ jobs:
       - run: pytest -q
       # Smoke run of the whole pipeline on a small dataset
       - name: Pipeline smoke run
-        run: care run-all --data-dir /tmp/care --scale 0.08 --folds 2
+        run: care run-all --data-dir /tmp/care --scale 0.08 --folds 2 --sim-days 7
 
   docker:
     runs-on: ubuntu-latest
