@@ -2,7 +2,7 @@
 
 Many small series (model x fault code) with low counts: a z-score on raw counts would
 alarm on noise. Each week's count is compared with a Poisson baseline from the previous
-12 weeks, and the p-values of all series in a week are corrected for multiple testing
+12 weeks that did not raise an alert (so a spike does not become the new normal), and the p-values of all series in a week are corrected for multiple testing
 (Benjamini-Hochberg), so the number of false alarms stays under control as series are added.
 An alert also needs a minimum size, because a jump from 1 to 4 tickets is not actionable.
 
@@ -85,22 +85,49 @@ def bh_adjust(p: np.ndarray) -> np.ndarray:
     return out
 
 
-def detect(weekly: pd.DataFrame) -> pd.DataFrame:
-    w = weekly.sort_values(["model", "fault_code", "week"]).copy()
+def detect(weekly: pd.DataFrame, exclude_alerts: bool = True) -> pd.DataFrame:
+    """Weekly Poisson test per series with Benjamini-Hochberg control across series.
+
+    The expected count is the mean complaint rate per car over the previous
+    ``BASELINE_WEEKS`` weeks, times this week's cars on the road. With ``exclude_alerts``
+    (default) weeks that raised an alert are left out of later baselines, which then reach
+    further back instead: otherwise a spike would inflate the expected count for the next
+    ``BASELINE_WEEKS`` weeks and hide a second rise of the same fault. The weeks are
+    therefore processed in order, since each week's alerts decide the next baselines.
+    """
+    w = weekly.sort_values(["week", "model", "fault_code"]).copy()
     if "park" not in w:
         w["park"] = 1.0
     w["rate"] = w["n"] / w["park"].clip(lower=1)
-    g = w.groupby(["model", "fault_code"])["rate"]
-    rate = g.transform(
-        lambda s: s.shift(1).rolling(BASELINE_WEEKS, min_periods=BASELINE_WEEKS).mean()
-    )
-    w["baseline"] = rate * w["park"].clip(lower=1)  # expected tickets for this week's fleet
-    w = w.dropna(subset=["baseline"])
-    lam = w["baseline"].clip(lower=0.5)
-    w["p_value"] = poisson.sf(w["n"] - 1, lam)  # P(X >= n)
-    w["q_value"] = w.groupby("week")["p_value"].transform(lambda p: bh_adjust(p.to_numpy()))
-    w["alert"] = (w["q_value"] < FDR) & (w["n"] >= MIN_COUNT) & (w["n"] >= MIN_RATIO * lam)
-    return w
+    history: dict[tuple, list[float]] = {}
+    out = []
+    for _, wk in w.groupby("week", sort=True):
+        keys = list(zip(wk["model"], wk["fault_code"], strict=True))
+        past = [history.get(k, [])[-BASELINE_WEEKS:] for k in keys]
+        rate = np.array([np.mean(h) if len(h) == BASELINE_WEEKS else np.nan for h in past])
+        wk = wk.assign(baseline=rate * wk["park"].clip(lower=1).to_numpy())
+        tested = wk["baseline"].notna().to_numpy()
+        alert = np.zeros(len(wk), dtype=bool)
+        if tested.any():
+            t = wk[tested]
+            lam = t["baseline"].clip(lower=0.5)
+            p = poisson.sf(t["n"] - 1, lam)  # P(X >= n)
+            q = bh_adjust(np.asarray(p))
+            a = (
+                (q < FDR)
+                & (t["n"] >= MIN_COUNT).to_numpy()
+                & (t["n"] >= MIN_RATIO * lam).to_numpy()
+            )
+            wk.loc[tested, "p_value"] = p
+            wk.loc[tested, "q_value"] = q
+            alert[tested] = a
+        wk["alert"] = alert
+        for k, r, al in zip(keys, wk["rate"], alert, strict=True):
+            if not (exclude_alerts and al):
+                history.setdefault(k, []).append(r)
+        out.append(wk)
+    res = pd.concat(out).dropna(subset=["baseline"])
+    return res.sort_values(["model", "fault_code", "week"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------- CUSUM

@@ -329,3 +329,31 @@ def test_flex_plan_keeps_headcount_and_split():
     assert half[GENERALIST][1] == 0  # closed intervals get no extra agents
     pool = flex_plan(per_q, pooled, 1.0, work)
     assert pool["a"].sum() == 0 and pool[GENERALIST].tolist() == [7, 0]
+
+
+def test_second_rise_after_a_spike_is_not_hidden_by_the_baseline():
+    from care_analytics.anomaly import detect
+
+    rng = np.random.default_rng(3)
+    weeks = pd.date_range("2024-01-01", periods=40, freq="W-MON")
+    rows = []
+    for series in range(20):
+        n = rng.poisson(3, len(weeks))
+        if series == 0:
+            n[20:22] = 40  # a spike ...
+            n[27] = 13  # ... and, six weeks later, a second rise of the same fault
+        rows += [
+            {"model": f"M{series}", "fault_code": "X", "week": w, "n": c}
+            for w, c in zip(weeks, n, strict=True)
+        ]
+    df = pd.DataFrame(rows)
+
+    def flagged(res):
+        return set(res.loc[res["alert"] & (res["model"] == "M0"), "week"])
+
+    new, old = detect(df), detect(df, exclude_alerts=False)
+    assert {weeks[20], weeks[21], weeks[27]} <= flagged(new)
+    assert weeks[27] not in flagged(old)  # the spike inflated the old baseline
+    # the baseline after the spike is the normal level, not the spike
+    b = new.loc[(new["model"] == "M0") & (new["week"] == weeks[27]), "baseline"].iloc[0]
+    assert b < 5

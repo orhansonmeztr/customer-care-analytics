@@ -24,7 +24,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | **How many calls next month?** | LightGBM forecasts the whole month on its first day with **9.7% WAPE**, against 15.5% for the best simple baseline. The gap is widest on holidays (22% vs 91–102%), because religious holidays move every year and "same day last year" breaks. |
 | **How many agents?** | Planned on a conformal-calibrated P80 forecast with **Erlang A**, which models callers who hang up (patience estimated from the data: 115 s). It needs **4.4% fewer agent hours** than Erlang C for the same 80/20 target, with abandonment capped at 5%; the Erlang C plan would over-deliver at 92%. In a simulated, staffed center Erlang A predicts the service level within 6 points, Erlang C within 29. Staffing the four queues as separate groups costs 36% more hours than one pooled group; cross-training half of the agents gets most of that back. 28 days in 30-minute intervals, 30% shrinkage. |
 | **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
-| **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 22 of 23 alerts were real. A daily CUSUM was tested against it at equal false alarms and caught the drift no earlier. |
+| **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 27 of 28 alerts were real. A daily CUSUM was tested against it at equal false alarms and caught the drift no earlier. |
 | **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network), with no data leaving the network, answers **11 of 12 held-out questions**, the same as `deepseek-flash` through the DeepSeek API; on the everyday set it gets 21 of 24 against flash's 24. Prompt 1.3 (KPI and pattern examples) lifted the local model from 6 to 11 on questions that played no part in writing it. The local model is the default; DeepSeek is used only when chosen explicitly, because data then leaves the network (see [recommended configuration](#recommended-configuration)). See [Analytics assistant](#analytics-assistant). |
 
 ## What it shows (mapped to the role)
@@ -125,10 +125,11 @@ weights a quiet Sunday like a busy Monday. Days with a broken data load are filt
 
 The annotations name the planted events: the brake recall (March 2024, service queue down to
 66%), the price increase (December 2024, sales queue), the 15 July national holiday in the
-forecast, and the complaint alert in the recall's first week. The complaint view also shows a
-limit of the detector: the expected count is a trailing 13-week mean, so after the recall it
-stays high for about three months, and a second rise of the same fault in that window would
-be missed. Leaving alert weeks out of the baseline would fix it.
+forecast, and the complaint alert in the recall's first week. The complaint view is where a
+limit of the first detector showed up: its expected count was a trailing 12-week mean, so
+after the recall it stayed high for about three months, and a second rise of the same fault
+in that window would have been missed. Alert weeks are now left out of the baseline (see
+[Complaint early warning](#complaint-early-warning)).
 
 ## Data
 
@@ -327,7 +328,20 @@ series.
 | Brake complaints, Kestrel K3 (recall) | 2024-03-01 | 2 days |
 | Battery complaints, Volta E (slow drift) | 2025-02-02 | 21 days |
 
-23 alerts, 22 on the planted problems.
+28 alerts, 27 on the planted problems.
+
+**Alert weeks are left out of the baseline.** The first version used a plain trailing mean:
+after the brake recall the expected count rose from about 12 to 78 tickets a week and stayed
+there for three months, because the spike was now part of "normal". The alert switched off
+while tickets were still 68 and 41, and a second rise of the same fault in that window would
+have been missed. The baseline now skips weeks that raised an alert and reaches further back
+instead; weeks are processed in order, since each week's alerts decide the next baselines. A
+test plants a spike and a second, smaller rise six weeks later: the old baseline misses the
+second rise, the new one catches it. On the generated data the recall stays flagged for two
+more weeks, the unresolved battery problem stays flagged until the data ends, the detection
+lags are unchanged and there is still one false alarm (23 → 28 alerts, 22 → 27 real). The
+trade-off: a lasting change in level keeps alerting until someone accepts it as the new
+normal, which for a complaint signal is the safer side.
 
 **A daily CUSUM for slow drifts, and why it did not win.** The obvious way to catch the slow
 battery drift earlier is a Poisson CUSUM, which adds up small daily excesses. It is built
