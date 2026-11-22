@@ -21,10 +21,10 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | Question | Answer |
 |---|---|
 | **Can we trust the data?** | Not as delivered. The pipeline found and fixed a 3-hour timezone error in the old PBX, one missing and one 40%-loaded day, 4,400 replayed call records, 4,400 duplicate customers (precision 100%, recall 98.3% against the injected truth) and phone numbers typed into complaint texts (masked for KVKK). |
-| **How many calls next month?** | LightGBM forecasts the whole month on its first day with **9.7% WAPE**, against 15.5% for the best simple baseline. The gap is widest on holidays (22% vs 91–102%), because religious holidays move every year and "same day last year" breaks. |
-| **How many agents?** | Planned on a conformal-calibrated P80 forecast with **Erlang A**, which models callers who hang up (patience estimated from the data: 115 s). It needs **4.4% fewer agent hours** than Erlang C for the same 80/20 target, with abandonment capped at 5%; the Erlang C plan would over-deliver at 92%. In a simulated, staffed center Erlang A predicts the service level within 6 points, Erlang C within 29. Staffing the four queues as separate groups costs 36% more hours than one pooled group; cross-training half of the agents gets most of that back. 28 days in 30-minute intervals, 30% shrinkage. |
-| **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **40%** is worth **368k TL** on the test set; calling everyone is worth 25k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
-| **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 27 of 28 alerts were real. A daily CUSUM was tested against it at equal false alarms and caught the drift no earlier. |
+| **How many calls next month?** | LightGBM forecasts the whole month on its first day with **9.3% WAPE**, against 15.2% for the best simple baseline. The gap is widest on holidays (19% vs 87–101%), because religious holidays move every year and "same day last year" breaks. |
+| **How many agents?** | Planned on a conformal-calibrated P80 forecast with **Erlang A**, which models callers who hang up (patience estimated from the data: 115 s). It needs **4.3% fewer agent hours** than Erlang C for the same 80/20 target, with abandonment capped at 5%; the Erlang C plan would over-deliver at 92%. In a simulated, staffed center Erlang A predicts the service level within 6 points, Erlang C within 27. Staffing the four queues as separate groups costs 37% more hours than one pooled group; cross-training half of the agents gets most of that back. 28 days in 30-minute intervals, 30% shrinkage. |
+| **Who is about to leave the service network?** | Scored 90 days before the warranty ends. Calling the riskiest **45%** is worth **350k TL** on the test set; calling everyone is worth 26k TL, because loyal customers use the voucher too. Distance to the nearest authorized service is the strongest driver. |
+| **Is a product problem emerging?** | A brake recall was flagged in its first week; a slowly growing EV battery problem after 21 days. 28 of 29 alerts were real. A daily CUSUM was tested against it: it caught the drift at most 4 days earlier, and only with four times the false alarms. |
 | **Can a manager just ask?** | Yes, in Turkish or English: a text-to-SQL assistant over the star schema, behind a SQL guard. **Qwen2.5-Coder-14B on our own GPU** (vLLM, local network), with no data leaving the network, answers **11 of 12 held-out questions**, the same as `deepseek-flash` through the DeepSeek API; on the everyday set it gets 21 of 24 against flash's 24. Prompt 1.3 (KPI and pattern examples) lifted the local model from 6 to 11 on questions that played no part in writing it. The local model is the default; DeepSeek is used only when chosen explicitly, because data then leaves the network (see [recommended configuration](#recommended-configuration)). See [Analytics assistant](#analytics-assistant). |
 
 ## What it shows (mapped to the role)
@@ -39,7 +39,7 @@ ground truth, so every step of the pipeline can be *scored*, not just run.
 | Planning | Erlang C and Erlang A (callers who hang up, patience estimated from the data) per 30-minute interval; both validated against a discrete-event simulation; dedicated vs cross-trained vs pooled skill groups ([`queue_sim.py`](src/care_analytics/queue_sim.py), [`skills_routing.py`](src/care_analytics/skills_routing.py)) |
 | Segmentation | RFM rules + k-means, profiled in business terms with an action per segment |
 | Classification | Out-of-time validation, leakage guard, calibration (Brier), lift, cost-based threshold, explanations |
-| Anomaly detection | Poisson baselines per car on the road, Benjamini-Hochberg false discovery control; a daily Poisson CUSUM compared at equal false alarms |
+| Anomaly detection | Poisson baselines per car on the road, Benjamini-Hochberg false discovery control; a daily Poisson CUSUM compared by false alarms |
 | Dashboards | Streamlit app; a [Tableau Public dashboard](https://public.tableau.com/app/profile/orhan.s.nmez/viz/MeridianAuto-CustomerCareAnalytics/MeridianAutocustomercare) built from the CSV extracts in `data/exports` |
 | AI decision support | Text-to-SQL assistant with a SQL guard, golden sets (core, hard, held-out) scored by execution accuracy over repeated runs, versioned prompts ([`assistant/`](src/care_analytics/assistant)) |
 | Engineering | CLI, tests on the injected truth, GitHub Actions, Docker; local LLM serving with vLLM on k3s ([`deploy/k8s`](deploy/k8s)) |
@@ -139,7 +139,7 @@ in that window would have been missed. Alert weeks are now left out of the basel
 | `vehicles` | 172,500 | invalid VINs (16 characters, letter O), owners missing from CRM |
 | `service_orders` | 635,000 | 1% re-loaded duplicates, odometer rollbacks and extra zeros, negative amounts (legitimate refunds *and* errors) |
 | `calls` (PBX) | 1.46 M | PBX v1 wrote UTC instead of local time, one missing day, one 40% day, 0.3% replayed rows, broken time order |
-| `tickets` | 139,000 | phone numbers in free text |
+| `tickets` | 140,000 | phone numbers in free text |
 | `surveys` | 147,000 | unhappy customers answer less often; orphan survey links |
 
 Planted events: a brake recall on one model (March 2024), a price-increase rush (December 2024)
@@ -175,24 +175,25 @@ so every input is at least 35 days old.
 
 | Model | WAPE | Bias | Holiday-related days | Other days |
 |---|---:|---:|---:|---:|
-| Same weekday last week | 15.5% | +0.1% | 102.5% | 12.9% |
-| Same weekday last year | 16.5% | −7.0% | 91.2% | 14.2% |
-| Holt-Winters (log, weekly) | 16.9% | −3.7% | 94.3% | 14.6% |
-| **LightGBM** (ratio-to-level target, holiday calendar) | **9.7%** | **−0.8%** | **22.3%** | **9.3%** |
+| Same weekday last week | 15.2% | +0.6% | 101.2% | 12.5% |
+| Same weekday last year | 16.5% | −6.9% | 87.3% | 14.2% |
+| Holt-Winters (log, weekly) | 16.1% | −3.0% | 92.4% | 13.7% |
+| **LightGBM** (ratio-to-level target, holiday calendar) | **9.3%** | **−0.2%** | **18.8%** | **9.0%** |
 
 LightGBM cannot extrapolate a trend, so it predicts the ratio of a day to a trailing level
-instead of the raw count. The raw P80 (quantile LightGBM) covers only 72% of days instead of
+instead of the raw count. The raw P80 (quantile LightGBM) covers only 70% of days instead of
 80%: in-sample residuals are smaller than out-of-time ones. It is therefore calibrated with
 **split conformal prediction** on the backtest's own errors, each fold corrected only with the
 errors of earlier folds (no look-ahead):
 
 | P80, on the 9 folds that could be calibrated | Coverage (target 80%) | Margin over P50 |
 |---|---:|---:|
-| Quantile LightGBM, raw | 75.5% | +7.4% |
-| Conformal-calibrated | **84.2%** | +11.5% |
+| Quantile LightGBM, raw | 72.9% | +7.0% |
+| Conformal-calibrated | **81.0%** | +9.8% |
 
-It overshoots a little: conformal coverage assumes errors are exchangeable over time, and call
-volumes drift. Over-covering by four points is the safer side for staffing.
+It lands one point above the target. That is not guaranteed: conformal coverage assumes errors
+are exchangeable over time, and call volumes drift, so on other data it can miss by a few
+points. Over-covering is the safer side for staffing.
 
 Staffing targets 80% of calls answered within 20 s, with a 90% occupancy cap. Two models:
 
@@ -210,18 +211,18 @@ Staffing targets 80% of calls answered within 20 s, with a 90% occupancy cap. Tw
 
 | P80 plan, 28 days | Agent hours on the phone | Peak agents | Service level delivered | Abandonment |
 |---|---:|---:|---:|---:|
-| Erlang C | 6,273 | 34 | 92.0% | - |
-| **Erlang A** | **6,000** (−4.4%) | **32** | 89.3% | 4.1% |
+| Erlang C | 6,267 | 35 | 91.9% | - |
+| **Erlang A** | **5,997** (−4.3%) | **33** | 89.3% | 4.1% |
 
-At the busiest interval (152 calls in 30 minutes):
+At the busiest interval (151 calls in 30 minutes):
 
-| Agents | 29 | 30 | 31 | **32** | 33 |
+| Agents | 30 | 31 | 32 | **33** | 34 |
 |---|---:|---:|---:|---:|---:|
-| Service level, Erlang C | 50.7% | 64.8% | 75.2% | **82.8%** | 88.3% |
-| Service level, Erlang A | 83.5% | 87.0% | 90.1% | 92.6% | 94.6% |
-| Abandonment, Erlang A | 5.8% | 4.5% | 3.4% | 2.5% | 1.9% |
+| Service level, Erlang C | 47.5% | 62.0% | 72.9% | **81.0%** | 86.9% |
+| Service level, Erlang A | 82.9% | 86.5% | 89.5% | 92.1% | 94.1% |
+| Abandonment, Erlang A | 6.0% | 4.7% | 3.6% | 2.7% | 2.0% |
 
-Erlang A already meets 80/20 with 29 agents, but at 5.8% abandonment; the cap moves it to 30.
+Erlang A already meets 80/20 with 30 agents, but at 6.0% abandonment; the cap moves it to 31.
 
 **Validated against a simulated, staffed center** ([`queue_sim.py`](src/care_analytics/queue_sim.py),
 `care validate-staffing`). The synthetic PBX does not record how many agents were logged in,
@@ -232,22 +233,22 @@ lognormal (coefficient of variation 0.62 instead of exponential's 1), nobody han
 first 4 s, and absenteeism leaves fewer agents than planned. With those switched off it
 matches Erlang A (tested).
 
-*Prediction*, given the agents actually logged in (1,342 intervals over 28 days):
+*Prediction*, given the agents actually logged in (1,344 intervals over 28 days):
 
 | Model | Service level: mean abs. error | bias | Abandonment: mean abs. error |
 |---|---:|---:|---:|
-| Erlang C | 28.9 pt | −28.5 pt | 4.2 pt |
-| **Erlang A** | **6.0 pt** | −2.8 pt | **2.6 pt** |
+| Erlang C | 27.4 pt | −26.9 pt | 3.9 pt |
+| **Erlang A** | **6.2 pt** | −2.9 pt | **2.8 pt** |
 
 Erlang C collapses when agents are short: in intervals loaded above 100% it predicts 0%
-answered within 20 s, while 66% were, because callers who hang up shorten the queue.
+answered within 20 s, while 65% were, because callers who hang up shorten the queue.
 
 *Decision*, both plans on the same random calls:
 
 | Plan | Agent hours | Service level | Abandonment | Busy intervals meeting 80/20 |
 |---|---:|---:|---:|---:|
-| Erlang C | 6,124 | 88.4% | 3.6% | 81% |
-| Erlang A | **5,870** (−4.1%) | 84.8% | 4.8% | 74% |
+| Erlang C | 6,114 | 89.1% | 3.3% | 81% |
+| Erlang A | **5,854** (−4.3%) | 85.3% | 4.5% | 75% |
 
 The Erlang A plan meets both targets over the month with 4% fewer agent hours, but with
 little margin: a quarter of busy intervals miss 80/20. Part of that is absenteeism inside the
@@ -268,14 +269,14 @@ abandoned) get extra generalists until they pass:
 
 | Design | Extra generalists per interval | Agent hours (28 days) | vs dedicated | Worst queue SL |
 |---|---:|---:|---:|---:|
-| Dedicated, each queue sized alone | 0 | 8,416 | | 87.5% (servis) |
-| 10% cross-trained | 4 | 7,194 | −14.5% | 87.7% (genel) |
-| 30% cross-trained | 3 | 6,858 | −18.5% | 89.4% (genel) |
-| 50% cross-trained | 2 | 6,522 | −22.5% | 88.4% (genel) |
-| Pooled, all generalists | 1 | **6,186** | **−26.5%** | 87.4% (genel) |
+| Dedicated, each queue sized alone | 0 | 8,416 | | 88.3% (servis) |
+| 10% cross-trained | 4 | 7,172 | −14.8% | 88.6% (genel) |
+| 30% cross-trained | 3 | 6,836 | −18.8% | 89.0% (genel) |
+| 50% cross-trained | 2 | 6,500 | −22.8% | 88.9% (genel) |
+| Pooled, all generalists | 1 | **6,164** | **−26.8%** | 87.9% (genel) |
 
 At this size (about 1,900 calls a day over four queues) separation costs a lot: the
-dedicated plan needs 36% more hours than the pooled one and over-delivers at 89.5%. Cross-training half of
+dedicated plan needs 37% more hours than the pooled one and over-delivers at 90.2%. Cross-training half of
 the agents captures most of the pooling gain. The pooled requirement alone is not enough on any
 design: absenteeism pushes abandonment just above 5%, so one extra agent per interval is needed
 even when everyone is a generalist. The small general-inquiry queue is the one that suffers
@@ -286,7 +287,7 @@ between queues; both shrink the gain of pooling.
 
 ### Segmentation
 
-127,829 customers with an authorized service visit in the last 36 months. RFM gives five
+127,856 customers with an authorized service visit in the last 36 months. RFM gives five
 segments with an action each; the one that matters most is **"at risk (valuable)"** (12,400
 customers): frequent visitors who have not come for ~10 months. k-means (k = 3 by silhouette)
 separates a "high calls · high complaints" group of 33,000 customers that RFM cannot see.
@@ -294,22 +295,22 @@ separates a "high calls · high complaints" group of 33,000 customers that RFM c
 ### Post-warranty service churn
 
 Churn = no authorized service visit in the 12 months after the 3-year warranty ends (38% of
-cars). Trained on 10,233 earlier warranty expiries, tested out-of-time on 4,407 later ones.
+cars). Trained on 10,218 earlier warranty expiries, tested out-of-time on 4,416 later ones.
 
 | Model | ROC-AUC | PR-AUC | Lift top 10% |
 |---|---:|---:|---:|
-| **Logistic regression** | **0.624** | **0.516** | **1.65x** |
-| LightGBM | 0.610 | 0.500 | 1.60x |
+| **Logistic regression** | **0.626** | **0.514** | **1.66x** |
+| LightGBM | 0.608 | 0.496 | 1.59x |
 
 The simpler model wins and is kept: it is as accurate and easier to explain. A ROC-AUC around
-0.62 is what this problem looks like: a large part of the decision (price sensitivity) is not
+0.63 is what this problem looks like: a large part of the decision (price sensitivity) is not
 in any system.
 
 The call list follows the economics, not a 0.5 threshold. A call costs 150 TL and offers a
 1,000 TL voucher; it brings back 25% of churners, a retained car is worth 6,000 TL a year,
 and half of the customers who would have come back anyway use the voucher too. Break-even
-churn probability: 37%. Calling the riskiest 40% earns 368k TL on the test set; calling
-everyone, 25k TL. Today's list: 1,555 of the 3,403 cars whose warranty ends in 60–120 days,
+churn probability: 37%. Calling the riskiest 45% earns 350k TL on the test set; calling
+everyone, 26k TL. Today's list: 1,671 of the 3,395 cars whose warranty ends in 60–120 days,
 each with its main risk driver.
 
 *Who* to call is in the end a causal question: the best rule ranks customers by their response
@@ -328,18 +329,18 @@ series.
 | Brake complaints, Kestrel K3 (recall) | 2024-03-01 | 2 days |
 | Battery complaints, Volta E (slow drift) | 2025-02-02 | 21 days |
 
-28 alerts, 27 on the planted problems.
+29 alerts, 28 on the planted problems.
 
 **Alert weeks are left out of the baseline.** The first version used a plain trailing mean:
-after the brake recall the expected count rose from about 12 to 78 tickets a week and stayed
-there for three months, because the spike was now part of "normal". The alert switched off
-while tickets were still 68 and 41, and a second rise of the same fault in that window would
+after the brake recall the expected count rose several-fold and stayed there for three
+months, because the spike was now part of "normal". The alert switched off while tickets
+were still well above the pre-recall level, and a second rise of the same fault in that window would
 have been missed. The baseline now skips weeks that raised an alert and reaches further back
 instead; weeks are processed in order, since each week's alerts decide the next baselines. A
 test plants a spike and a second, smaller rise six weeks later: the old baseline misses the
-second rise, the new one catches it. On the generated data the recall stays flagged for two
+second rise, the new one catches it. On the generated data the recall stays flagged for a few
 more weeks, the unresolved battery problem stays flagged until the data ends, the detection
-lags are unchanged and there is still one false alarm (23 → 28 alerts, 22 → 27 real). The
+lags are unchanged and there is still one false alarm (29 alerts, 28 real). The
 trade-off: a lasting change in level keeps alerting until someone accepts it as the new
 normal, which for a complaint signal is the safer side.
 
@@ -347,16 +348,17 @@ normal, which for a complaint signal is the safer side.
 battery drift earlier is a Poisson CUSUM, which adds up small daily excesses. It is built
 here with a per-car baseline taken with a four-week guard gap (so the drift does not become the
 new normal), a day-of-week factor, and a threshold per series set by Monte Carlo for a target
-false-alarm interval. Compared at equal false alarms:
+false-alarm interval. Compared by false alarms:
 
 | Detector | False alarms | Battery drift detected after |
 |---|---:|---:|
 | Weekly test | 1 | 21 days |
-| CUSUM, one false alarm per series every 50 years (default) | 3 | 21 days |
-| CUSUM, every 10 years | 16 | 20 days |
-| CUSUM, every 2 years, 84-day baseline | 64 | 16 days |
+| CUSUM, one false alarm per series every 50 years (default) | 4 | 17 days |
+| CUSUM, every 10 years | 14 | 15 days |
+| CUSUM, every 2 years, 84-day baseline | 51 | 13 days |
 
-On this data the CUSUM is earlier only by raising many more alarms: the drift grows linearly
+On this data the CUSUM is earlier only by raising more alarms (four days earlier at four
+times the false alarms, eight days at fifty times): the drift grows linearly
 from zero and the weekly test already uses a per-car baseline. Real false alarms also run
 above the design rate although the counts are close to Poisson (dispersion 1.03), because the
 baseline is itself an estimate. The CUSUM stays as a second detector that can fire on any
