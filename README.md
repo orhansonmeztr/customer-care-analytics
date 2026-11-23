@@ -82,6 +82,17 @@ With Docker (builds the data on first start):
 docker build -t customer-care-analytics . && docker run -p 8501:8501 customer-care-analytics
 ```
 
+For *Ask the data* the container must reach the local model. The port-forward listens on the
+host's `localhost`, which is not the container's, so share the host network:
+
+```bash
+kubectl -n llm port-forward svc/vllm-coder 18001:8000 &
+docker run --network host -v care-data:/data customer-care-analytics
+```
+
+With DeepSeek instead (synthetic data only, see below): `docker run -p 8501:8501 --env-file .env
+-e ASSISTANT_PROVIDER=deepseek customer-care-analytics`.
+
 Tests check the pipeline against what the generator injected:
 
 ```bash

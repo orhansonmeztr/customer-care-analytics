@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 curl \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir ".[dashboard]"
+RUN pip install --no-cache-dir ".[dashboard,assistant]"
 COPY dashboard ./dashboard
 
 ENV CARE_DATA_DIR=/data CARE_SCALE=0.3 CARE_FOLDS=6
