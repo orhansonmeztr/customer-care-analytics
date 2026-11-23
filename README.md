@@ -90,8 +90,12 @@ kubectl -n llm port-forward svc/vllm-coder 18001:8000 &
 docker run --network host -v care-data:/data customer-care-analytics
 ```
 
-With DeepSeek instead (synthetic data only, see below): `docker run -p 8501:8501 --env-file .env
--e ASSISTANT_PROVIDER=deepseek customer-care-analytics`.
+With DeepSeek instead (synthetic data only, see below), no GPU node or host network needed; there
+is no automatic fallback to it, so that data never leaves the network without being asked to:
+
+```bash
+docker run -p 8501:8501 --env-file .env -e ASSISTANT_PROVIDER=deepseek -v care-data:/data customer-care-analytics
+```
 
 Tests check the pipeline against what the generator injected:
 
