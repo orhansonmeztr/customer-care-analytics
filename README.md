@@ -79,7 +79,27 @@ Power BI extracts to `data/exports/*.csv`.
 With Docker (builds the data on first start):
 
 ```bash
-docker build -t customer-care-analytics . && docker run -p 8501:8501 customer-care-analytics
+docker build -t customer-care-analytics .
+docker run --rm --name care-dashboard -p 8501:8501 -v care-data:/data customer-care-analytics
+```
+
+`--rm` removes the container when it stops and `--name` keeps one name, so runs do not pile up;
+the data stays in the `care-data` volume. Stop it with `docker stop care-dashboard`.
+
+For *Ask the data* the container must reach the local model. The port-forward listens on the
+host's `localhost`, which is not the container's, so share the host network:
+
+```bash
+kubectl -n llm port-forward svc/vllm-coder 18001:8000 &
+docker run --rm --name care-dashboard --network host -v care-data:/data customer-care-analytics
+```
+
+With DeepSeek instead (synthetic data only, see below), no GPU node or host network needed; there
+is no automatic fallback to it, so that data never leaves the network without being asked to:
+
+```bash
+docker run --rm --name care-dashboard -p 8501:8501 --env-file .env -e ASSISTANT_PROVIDER=deepseek \
+  -v care-data:/data customer-care-analytics
 ```
 
 Tests check the pipeline against what the generator injected:
